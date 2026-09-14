@@ -1,0 +1,9 @@
+yfinance
+pandas
+numpy
+ta
+matplotlib
+streamlit
+requests
+lxml
+olefile

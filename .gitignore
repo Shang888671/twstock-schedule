@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.pyc
+
+# 本機快取(執行時自動重建,不用進版控)
+data_cache/
+
+# 使用者手動維護的個人資料(XQ 匯出的分點 CSV、自選股 .dsl 清單)——
+# 這些是個人交易資料,不應該上傳到公開的 GitHub repo
+xq_branch_data/*.csv
+xq_branch_data/*.dsl
+xq_branch_data/*.xsb
+
+# Claude Code 專案設定/第三方技能(跟部署的 App 本身無關)
+.claude/
+
+# Streamlit 密鑰檔(目前沒有,但預先排除避免以後不小心提交 API key)
+.streamlit/secrets.toml
