@@ -13,6 +13,7 @@ import streamlit.components.v1 as components
 from fetch_data import get_quote, get_history, to_yf_symbol, get_chinese_name
 from indicators import add_indicators
 from volume_profile import find_nearest_supports, find_nearest_resistances
+from us_market import get_us_overnight_signal
 
 st.set_page_config(page_title="台股查詢模型", page_icon="📈", layout="wide")
 
@@ -131,6 +132,11 @@ def load_name(code, otc):
 def load_history_with_indicators(code, period, otc):
     hist = get_history(code, period=period, otc=otc)
     return add_indicators(hist)
+
+
+@st.cache_data(ttl=300)
+def load_us_overnight_signal():
+    return get_us_overnight_signal()
 
 
 # --- K線圖:TradingView 官方開源的 lightweight-charts 引擎(取代原本的 Plotly 版本) ---
@@ -382,6 +388,55 @@ st.markdown(
     </div>""",
     unsafe_allow_html=True,
 )
+
+# --- 美股夜盤連動指標(獨立於個股查詢,跟股票代號無關,所以放在報價卡片之前) ---
+try:
+    us_signal = load_us_overnight_signal()
+except Exception:
+    us_signal = None
+
+if us_signal:
+    direction = us_signal["direction"]
+    if direction == "偏多":
+        us_badge_class, us_badge_text = "badge-up", "▲ 偏多"
+    elif direction == "偏空":
+        us_badge_class, us_badge_text = "badge-down", "▼ 偏空"
+    elif direction == "不一致":
+        us_badge_class, us_badge_text = "badge-flat", "▬ 方向不一致"
+    else:
+        us_badge_class, us_badge_text = "badge-flat", "資料不足"
+
+    def _us_stat_html(label, r):
+        if not r:
+            return f'<div class="stat-item"><div class="label">{label}</div><div class="value">—</div></div>'
+        arrow = "▲" if r["change_pct"] > 0 else ("▼" if r["change_pct"] < 0 else "▬")
+        color = "var(--tw-up)" if r["change_pct"] > 0 else ("var(--tw-down)" if r["change_pct"] < 0 else "#9ca3af")
+        return (
+            f'<div class="stat-item"><div class="label">{label}(收{r["asof"][:10]})</div>'
+            f'<div class="value" style="color:{color}">{arrow} {r["change_pct"]:+.2f}%</div></div>'
+        )
+
+    st.markdown(
+        f"""
+        <div class="quote-card">
+            <div class="quote-symbol">🌙 美股夜盤連動指標</div>
+            <div class="quote-price-row">
+                <div class="quote-badge {us_badge_class}">{us_badge_text}</div>
+            </div>
+            <div class="stat-row">
+                {_us_stat_html("小道瓊期貨", us_signal["dow_futures"])}
+                {_us_stat_html("費城半導體指數", us_signal["sox"])}
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.caption(
+        "小道瓊期貨(YM=F)近24小時交易,涵蓋最新夜盤走勢;費半(^SOX)是美股現貨收盤價。"
+        "兩者同漲/同跌才判定「偏多/偏空」,純觀察參考,不是下單訊號。"
+    )
+else:
+    st.warning("美股夜盤資料抓取失敗,暫時無法顯示連動指標。")
 
 # --- 報價卡片 ---
 last_price = quote["last_price"]
