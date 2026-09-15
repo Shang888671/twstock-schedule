@@ -14,6 +14,7 @@ from fetch_data import get_quote, get_history, to_yf_symbol, get_chinese_name
 from indicators import add_indicators
 from volume_profile import find_nearest_supports, find_nearest_resistances
 from us_market import get_us_overnight_signal, US_MARKET_SYMBOLS, STRENGTH_WEIGHT, SCORE_STRONG_THRESHOLD
+from xq_branch import XQ_BRANCH_DIR
 
 st.set_page_config(page_title="台股查詢模型", page_icon="📈", layout="wide")
 
@@ -102,6 +103,33 @@ with st.sidebar:
     code = st.text_input("股票代號", value="2330", help="輸入純數字代號,例如 2330")
     otc = st.checkbox("上櫃股票", value=False, help="預設為上市股票")
     period = st.selectbox("歷史資料區間", ["3mo", "6mo", "1y", "2y", "5y"], index=2)
+    st.divider()
+
+    # 雲端部署版本沒有本機的 xq_branch_data/(.dsl/CSV 個人資料被 .gitignore 排除,不會上傳
+    # 到 GitHub),導致「檢查整個.dsl股票池」「RS排行」「分點掃描」這幾個功能在雲端版本上
+    # 會是空的。加這個上傳功能讓使用者可以直接在網頁上把本機匯出的檔案傳上來,存到雲端App
+    # 當次執行的暫存空間——不透過 git,所以不會把個人資料留在版控歷史裡。
+    with st.expander("📤 上傳個人資料(.dsl / CSV)"):
+        st.caption(
+            "雲端版本沒有你本機的 .dsl 自選清單/分點CSV(個人資料不會上傳到GitHub)。"
+            "在這裡上傳後,「檢查整個.dsl股票池」「RS排行」「分點掃描」才會抓得到資料——"
+            "但這裡存的是這次雲端App執行期間的暫存空間,App閒置一段時間重啟後就會消失,"
+            "要用的時候可能得重新上傳一次,不像本機是永久保存。"
+        )
+        uploaded_files = st.file_uploader(
+            "選擇 .dsl 或 .csv 檔案", type=["dsl", "csv"], accept_multiple_files=True
+        )
+        if uploaded_files:
+            for f in uploaded_files:
+                (XQ_BRANCH_DIR / f.name).write_bytes(f.getbuffer())
+            st.success(f"已存入 {len(uploaded_files)} 個檔案")
+
+        existing = sorted(p.name for p in XQ_BRANCH_DIR.glob("*") if p.suffix in (".dsl", ".csv"))
+        if existing:
+            st.caption("目前資料夾裡的檔案:" + "、".join(existing))
+        else:
+            st.caption("目前資料夾裡還沒有任何 .dsl/.csv 檔案。")
+
     st.divider()
     st.caption("學習用途,所有數字僅供參考,不構成投資建議。")
 
