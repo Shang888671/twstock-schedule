@@ -13,7 +13,7 @@ import streamlit.components.v1 as components
 from fetch_data import get_quote, get_history, to_yf_symbol, get_chinese_name
 from indicators import add_indicators
 from volume_profile import find_nearest_supports, find_nearest_resistances
-from us_market import get_us_overnight_signal, US_MARKET_SYMBOLS, STRENGTH_WEIGHT
+from us_market import get_us_overnight_signal, US_MARKET_SYMBOLS, STRENGTH_WEIGHT, SCORE_STRONG_THRESHOLD
 
 st.set_page_config(page_title="台股查詢模型", page_icon="📈", layout="wide")
 
@@ -419,18 +419,46 @@ if us_signal:
             fill_left, fill_width, fill_color = pct, 50 - pct, "var(--tw-down)"
         else:
             fill_left, fill_width, fill_color = 50, 0, "#9ca3af"
+        # 刻度:兩端(滿分)、中間(0分)、加上強弱門檻(SCORE_STRONG_THRESHOLD)共5個,
+        # 門檻刻度直接對應「強多/偏多/中性/偏空/強空」五級的分界,不是隨便等分的刻度。
+        def _tick_pct(t):
+            return (t + SCORE_MAX) / (2 * SCORE_MAX) * 100
+
+        def _tick_label(t):
+            if t == -SCORE_MAX:
+                return f"強空{t:+d}"
+            if t == SCORE_MAX:
+                return f"強多{t:+d}"
+            return "0" if t == 0 else f"{t:+d}"
+
+        def _tick_transform(t):
+            if t == -SCORE_MAX:
+                return "0%"
+            if t == SCORE_MAX:
+                return "-100%"
+            return "-50%"
+
+        tick_scores = [-SCORE_MAX, -SCORE_STRONG_THRESHOLD, 0, SCORE_STRONG_THRESHOLD, SCORE_MAX]
         # 刻意寫成單行、不縮排——Streamlit 的 markdown 引擎看到多行 HTML 裡有 4 個空白以上的
         # 縮排會誤判成「縮排程式碼區塊」,導致後面接著的 stat-row HTML 整段變成純文字顯示,
         # 不會被當成 HTML 渲染(先前這裡用多行縮排字串時就踩到這個坑,改單行後就正常了)。
+        ticks_html = "".join(
+            f'<div style="position:absolute; left:{_tick_pct(t)}%; top:-3px; bottom:-3px; width:1px; '
+            f'background:rgba(255,255,255,{0.35 if t == 0 else 0.18});"></div>'
+            for t in tick_scores
+        )
+        labels_html = "".join(
+            f'<span style="position:absolute; left:{_tick_pct(t)}%; transform:translateX({_tick_transform(t)}); '
+            f'white-space:nowrap;">{_tick_label(t)}</span>'
+            for t in tick_scores
+        )
         score_gauge_html = (
             '<div style="margin-top:0.8rem; max-width:360px;">'
             '<div style="position:relative; height:8px; background:rgba(255,255,255,0.08); border-radius:4px;">'
-            '<div style="position:absolute; left:50%; top:-3px; bottom:-3px; width:2px; background:rgba(255,255,255,0.35);"></div>'
+            f"{ticks_html}"
             f'<div style="position:absolute; left:{fill_left}%; width:{fill_width}%; top:0; bottom:0; background:{fill_color}; border-radius:4px;"></div>'
             "</div>"
-            '<div style="display:flex; justify-content:space-between; font-size:0.68rem; color:#6b7280; margin-top:3px;">'
-            f"<span>強空 -{SCORE_MAX}</span><span>0</span><span>強多 +{SCORE_MAX}</span>"
-            "</div>"
+            f'<div style="position:relative; height:1rem; font-size:0.68rem; color:#6b7280; margin-top:3px;">{labels_html}</div>'
             "</div>"
         )
 
