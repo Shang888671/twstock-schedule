@@ -13,7 +13,7 @@ import streamlit.components.v1 as components
 from fetch_data import get_quote, get_history, to_yf_symbol, get_chinese_name
 from indicators import add_indicators
 from volume_profile import find_nearest_supports, find_nearest_resistances
-from us_market import get_us_overnight_signal
+from us_market import get_us_overnight_signal, US_MARKET_SYMBOLS
 
 st.set_page_config(page_title="台股查詢模型", page_icon="📈", layout="wide")
 
@@ -397,12 +397,13 @@ except Exception:
 
 if us_signal:
     direction = us_signal["direction"]
+    ratio = us_signal["direction_ratio"]
     if direction == "偏多":
-        us_badge_class, us_badge_text = "badge-up", "▲ 偏多"
+        us_badge_class, us_badge_text = "badge-up", f"▲ 偏多({ratio})"
     elif direction == "偏空":
-        us_badge_class, us_badge_text = "badge-down", "▼ 偏空"
+        us_badge_class, us_badge_text = "badge-down", f"▼ 偏空({ratio})"
     elif direction == "不一致":
-        us_badge_class, us_badge_text = "badge-flat", "▬ 方向不一致"
+        us_badge_class, us_badge_text = "badge-flat", f"▬ 方向不一致({ratio})"
     else:
         us_badge_class, us_badge_text = "badge-flat", "資料不足"
 
@@ -416,6 +417,9 @@ if us_signal:
             f'<div class="value" style="color:{color}">{arrow} {r["change_pct"]:+.2f}%</div></div>'
         )
 
+    stat_items = "".join(
+        _us_stat_html(label, us_signal[key]) for key, (_, label) in US_MARKET_SYMBOLS.items()
+    )
     st.markdown(
         f"""
         <div class="quote-card">
@@ -424,16 +428,15 @@ if us_signal:
                 <div class="quote-badge {us_badge_class}">{us_badge_text}</div>
             </div>
             <div class="stat-row">
-                {_us_stat_html("小道瓊期貨", us_signal["dow_futures"])}
-                {_us_stat_html("費城半導體指數", us_signal["sox"])}
+                {stat_items}
             </div>
         </div>
         """,
         unsafe_allow_html=True,
     )
     st.caption(
-        "小道瓊期貨(YM=F)近24小時交易,涵蓋最新夜盤走勢;費半(^SOX)是美股現貨收盤價。"
-        "兩者同漲/同跌才判定「偏多/偏空」,純觀察參考,不是下單訊號。"
+        "小道瓊/那斯達克期貨(YM=F/NQ=F)近24小時交易,涵蓋最新夜盤走勢;費半(^SOX)、"
+        "台積電ADR(TSM)是美股現貨收盤價。方向用「幾個漲、幾個跌」多數決判定,純觀察參考,不是下單訊號。"
     )
 else:
     st.warning("美股夜盤資料抓取失敗,暫時無法顯示連動指標。")
