@@ -220,6 +220,9 @@ def get_stock_call_warrant_detail(code: str, date_str: str):
     ]
 
 
+_WARRANT_COUNT_CACHE_TAG = "priceup"  # 快取檔名的版本標記,計算邏輯改變時要跟著改這個字串
+
+
 def get_warrant_large_trade_counts_multi(codes, start_date: str, end_date: str, threshold: float, sleep: float = 0.3, progress_callback=None) -> dict:
     """一批股票、一段區間,逐日算出「當天單一認購權證成交金額 >= threshold 且當天收紅的檔數」。
 
@@ -233,7 +236,9 @@ def get_warrant_large_trade_counts_multi(codes, start_date: str, end_date: str, 
 
     threshold 由呼叫端傳入(例如 `signals.WARRANT_SINGLE_TRADE_THRESHOLD`),不在這裡
     重複定義門檻常數——如果呼叫端用不同的 threshold 重跑,舊快取會被視為過期重新計算
-    (快取檔名內含 threshold,不同門檻不會共用到錯誤的快取)。
+    (快取檔名內含 threshold,不同門檻不會共用到錯誤的快取;同樣道理,快取檔名也內含
+    `_WARRANT_COUNT_CACHE_TAG`,這裡的計算邏輯本身改變時要跟著改這個字串,否則舊快取
+    會被誤用——2026-09-16 加入「只算收紅」過濾時就是吃到這個問題,才補上這個版本標記)。
 
     progress_callback(done, total) 可選,逐日回報抓取進度(total 是「還沒有快取、需要打 API」
     的天數),理由同 `get_institutional_flow_multi`。
@@ -244,7 +249,7 @@ def get_warrant_large_trade_counts_multi(codes, start_date: str, end_date: str, 
     threshold_tag = int(threshold)
     caches = {}
     for code in codes:
-        cache_path = CACHE_DIR / f"warrant_large_trade_count_{code}_{threshold_tag}.csv"
+        cache_path = CACHE_DIR / f"warrant_large_trade_count_{_WARRANT_COUNT_CACHE_TAG}_{code}_{threshold_tag}.csv"
         caches[code] = pd.read_csv(cache_path, index_col=0, parse_dates=True) if cache_path.exists() else pd.DataFrame()
 
     dates = pd.bdate_range(start=start_date, end=end_date)
@@ -276,7 +281,7 @@ def get_warrant_large_trade_counts_multi(codes, start_date: str, end_date: str, 
             new_df = pd.DataFrame.from_dict(new_rows[code], orient="index", columns=["count"])
             combined = pd.concat([cached, new_df]) if not cached.empty else new_df
             combined = combined[~combined.index.duplicated(keep="last")].sort_index()
-            combined.to_csv(CACHE_DIR / f"warrant_large_trade_count_{code}_{threshold_tag}.csv")
+            combined.to_csv(CACHE_DIR / f"warrant_large_trade_count_{_WARRANT_COUNT_CACHE_TAG}_{code}_{threshold_tag}.csv")
         else:
             combined = cached
         if combined.empty:
