@@ -8,6 +8,11 @@
 
 daily OHLCV 沒有逐筆成交明細,這裡的「分佈」是用 Low~High 區間近似還原,不是真正的
 逐筆委託成交價格統計。
+
+**距離上限**:近3個月的高低價區間裡,量能高峰不一定剛好落在現價附近——如果這段期間走勢
+偏單邊(例如一路上漲),量能密集區可能還停留在區間低點,離現價很遠,當成「最近支撐」參考
+價值不大。所以只挑離現價 `VOLUME_PROFILE_MAX_DISTANCE_PCT` 以內的高峰,超過這個範圍寧可
+少列一個位置,也不列太遠、對短線沒意義的價位(使用者確認用 ±15%,短線交易用途)。
 """
 
 import numpy as np
@@ -16,6 +21,7 @@ import pandas as pd
 VOLUME_PROFILE_LOOKBACK_DAYS = 60  # 近3個月交易日——使用者做短線交易,確認用這個區間
 VOLUME_PROFILE_BINS = 50
 VOLUME_PROFILE_PEAK_WINDOW = 2  # 區域高峰要比左右各幾個 bin 都高,數字越大雜訊越少
+VOLUME_PROFILE_MAX_DISTANCE_PCT = 0.15  # 離現價超過這個比例就不列入,使用者確認短線用±15%
 
 
 def _build_volume_histogram(price_df: pd.DataFrame, num_bins: int) -> tuple[np.ndarray, np.ndarray]:
@@ -60,27 +66,37 @@ def _find_nearest_peaks(price_df: pd.DataFrame, num_levels: int, above: bool) ->
         if v > neighbors.max():
             peaks.append({"price": float(bin_centers[i]), "volume": float(v)})
 
+    max_distance = close * VOLUME_PROFILE_MAX_DISTANCE_PCT
     if above:
-        candidates = sorted((p for p in peaks if p["price"] > close), key=lambda p: p["price"])
+        candidates = sorted(
+            (p for p in peaks if close < p["price"] <= close + max_distance),
+            key=lambda p: p["price"],
+        )
     else:
-        candidates = sorted((p for p in peaks if p["price"] < close), key=lambda p: p["price"], reverse=True)
+        candidates = sorted(
+            (p for p in peaks if close - max_distance <= p["price"] < close),
+            key=lambda p: p["price"],
+            reverse=True,
+        )
     return candidates[:num_levels]
 
 
-def find_nearest_supports(price_df: pd.DataFrame, num_supports: int = 2) -> list[dict]:
+def find_nearest_supports(price_df: pd.DataFrame, num_supports: int = 3) -> list[dict]:
     """算出離目前收盤價最近的 num_supports 個「籌碼密集區」支撐價位(收盤價之下的區域高峰)。
 
     price_df 需要 Low/High/Volume/Close 欄位,用呼叫端已經算好指標的 df 直接複用即可,
     不用重抓資料。回傳依離收盤價由近到遠排序的 [{"price": float, "volume": float}, ...],
-    資料不足或找不到足夠的支撐時回傳少於 num_supports 筆(不是錯誤)。
+    資料不足、找不到足夠的支撐、或高峰都超過 `VOLUME_PROFILE_MAX_DISTANCE_PCT` 距離上限時,
+    回傳少於 num_supports 筆(不是錯誤)。
     """
     return _find_nearest_peaks(price_df, num_supports, above=False)
 
 
-def find_nearest_resistances(price_df: pd.DataFrame, num_resistances: int = 2) -> list[dict]:
+def find_nearest_resistances(price_df: pd.DataFrame, num_resistances: int = 3) -> list[dict]:
     """算出離目前收盤價最近的 num_resistances 個「籌碼密集區」阻力價位(收盤價之上的區域高峰)。
 
-    跟 `find_nearest_supports()` 是同一套邏輯,方向相反——用途、資料需求、回傳格式都一樣。
+    跟 `find_nearest_supports()` 是同一套邏輯,方向相反——用途、資料需求、回傳格式、
+    距離上限規則都一樣。
     """
     return _find_nearest_peaks(price_df, num_resistances, above=True)
 
