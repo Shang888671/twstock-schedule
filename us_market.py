@@ -19,6 +19,14 @@
 偶爾會因為台積電自己的消息(法說會、除息、ADR溢價/折價)脫離大盤走勢,如果要求 4 個
 指標全部同向才判得出方向,反而會讓「不一致」出現的頻率大增,參考價值不增反減,違背
 當初加更多指標想提高參考價值的本意。
+
+每個指標另外附「強弱」標記——使用者問「這個漲跌算強還是弱」,確認要跟自己近期比,不是
+用固定的絕對門檻(例如±1%)。做法:算出「今天以前」`STRENGTH_WINDOW_DAYS` 個交易日的
+平均單日漲跌幅度(絕對值)當基準,今天的漲跌幅度對這個基準的倍數 >= 1.5 倍算「強」、
+<= 0.5 倍算「弱」,其餘算「普通」。基準只算「今天以前」的資料,不把今天自己算進去,
+不然今天一根大漲大跌會把自己的比較基準也一起墊高,變得比不出強弱。這個做法的好處是
+門檻會自動跟著各指標自己的波動習慣調整(例如那斯達克期貨本來就比小道瓊期貨愛大起大落,
+基準也會跟著比較高,不會用同一把絕對尺去評斷不同指標)。
 """
 
 import yfinance as yf
@@ -30,23 +38,52 @@ US_MARKET_SYMBOLS = {
     "tsm_adr": ("TSM", "台積電ADR"),
 }
 
+STRENGTH_WINDOW_DAYS = 20
+STRENGTH_STRONG_RATIO = 1.5
+STRENGTH_WEAK_RATIO = 0.5
+
 
 def _latest_change(symbol: str) -> dict | None:
-    """抓 symbol 最近幾個交易日的收盤,算出最新一筆相對前一筆的漲跌幅。資料不足回傳 None。"""
-    hist = yf.Ticker(symbol).history(period="5d")
+    """抓 symbol 近期收盤,算出最新一筆相對前一筆的漲跌幅,以及相對近期的強弱標記。
+
+    強弱標記(`strength`,"強"/"普通"/"弱")跟對應倍數(`strength_ratio`)見模組 docstring
+    的說明;近期資料不足 `STRENGTH_WINDOW_DAYS` 天時這兩個欄位回傳 None(不硬猜),但
+    `change_pct` 本身只要有兩筆收盤就算得出來,兩者分開處理。資料完全不足(不到兩筆收盤)
+    整個回傳 None。
+    """
+    hist = yf.Ticker(symbol).history(period="2mo")
     close = hist["Close"].dropna()
     if len(close) < 2:
         return None
+
     latest, prev = float(close.iloc[-1]), float(close.iloc[-2])
+    change_pct = (latest / prev - 1) * 100
+
+    strength, strength_ratio = None, None
+    daily_returns = close.pct_change().dropna() * 100
+    baseline_returns = daily_returns.iloc[:-1]  # 不含今天(daily_returns 最後一筆就是今天)
+    if len(baseline_returns) >= STRENGTH_WINDOW_DAYS:
+        baseline = baseline_returns.tail(STRENGTH_WINDOW_DAYS).abs().mean()
+        if baseline > 0:
+            strength_ratio = abs(change_pct) / baseline
+            if strength_ratio >= STRENGTH_STRONG_RATIO:
+                strength = "強"
+            elif strength_ratio <= STRENGTH_WEAK_RATIO:
+                strength = "弱"
+            else:
+                strength = "普通"
+
     return {
         "close": latest,
-        "change_pct": (latest / prev - 1) * 100,
+        "change_pct": change_pct,
         "asof": close.index[-1].strftime("%Y-%m-%d %H:%M"),
+        "strength": strength,
+        "strength_ratio": strength_ratio,
     }
 
 
 def get_us_overnight_signal() -> dict:
-    """回傳每個指標各自最新漲跌幅,以及依「幾個漲、幾個跌」統計出的綜合方向摘要。
+    """回傳每個指標各自最新漲跌幅(含強弱標記),以及依「幾個漲、幾個跌」統計出的綜合方向摘要。
 
     綜合方向用抓得到資料的指標裡漲跌數量的多數決:漲的多 -> "偏多"、跌的多 -> "偏空"、
     平手 -> "不一致";一個資料都抓不到時回傳 None。`direction_ratio` 是對應的比例文字
@@ -75,7 +112,8 @@ if __name__ == "__main__":
     for key, (_, label) in US_MARKET_SYMBOLS.items():
         r = result[key]
         if r:
-            print(f"{label}:{r['close']:,.2f} ({r['change_pct']:+.2f}%) @ {r['asof']}")
+            strength_str = f"，{r['strength']}(近{STRENGTH_WINDOW_DAYS}日平均的{r['strength_ratio']:.1f}倍)" if r["strength"] else "，強弱資料不足"
+            print(f"{label}:{r['close']:,.2f} ({r['change_pct']:+.2f}%) @ {r['asof']}{strength_str}")
         else:
             print(f"{label}:資料不足")
     if result["direction"]:

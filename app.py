@@ -407,14 +407,23 @@ if us_signal:
     else:
         us_badge_class, us_badge_text = "badge-flat", "資料不足"
 
+    US_STRENGTH_COLOR = {"強": "var(--accent-gold)", "普通": "#8b93a7", "弱": "#6b7280"}
+
     def _us_stat_html(label, r):
         if not r:
             return f'<div class="stat-item"><div class="label">{label}</div><div class="value">—</div></div>'
         arrow = "▲" if r["change_pct"] > 0 else ("▼" if r["change_pct"] < 0 else "▬")
         color = "var(--tw-up)" if r["change_pct"] > 0 else ("var(--tw-down)" if r["change_pct"] < 0 else "#9ca3af")
+        strength = r.get("strength")
+        strength_html = (
+            f' <span style="color:{US_STRENGTH_COLOR[strength]}; font-size:0.75rem; font-weight:700;">'
+            f"{strength}</span>"
+            if strength
+            else ""
+        )
         return (
             f'<div class="stat-item"><div class="label">{label}(收{r["asof"][:10]})</div>'
-            f'<div class="value" style="color:{color}">{arrow} {r["change_pct"]:+.2f}%</div></div>'
+            f'<div class="value" style="color:{color}">{arrow} {r["change_pct"]:+.2f}%{strength_html}</div></div>'
         )
 
     stat_items = "".join(
@@ -436,7 +445,9 @@ if us_signal:
     )
     st.caption(
         "小道瓊/那斯達克期貨(YM=F/NQ=F)近24小時交易,涵蓋最新夜盤走勢;費半(^SOX)、"
-        "台積電ADR(TSM)是美股現貨收盤價。方向用「幾個漲、幾個跌」多數決判定,純觀察參考,不是下單訊號。"
+        "台積電ADR(TSM)是美股現貨收盤價。方向用「幾個漲、幾個跌」多數決判定;"
+        "「強/普通/弱」是今天漲跌幅度跟自己近20日平均單日波動的比較,不是固定的絕對門檻。"
+        "純觀察參考,不是下單訊號。"
     )
 else:
     st.warning("美股夜盤資料抓取失敗,暫時無法顯示連動指標。")
