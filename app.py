@@ -13,7 +13,7 @@ import streamlit.components.v1 as components
 from fetch_data import get_quote, get_history, to_yf_symbol, get_chinese_name
 from indicators import add_indicators
 from volume_profile import find_nearest_supports, find_nearest_resistances
-from us_market import get_us_overnight_signal, US_MARKET_SYMBOLS
+from us_market import get_us_overnight_signal, US_MARKET_SYMBOLS, STRENGTH_WEIGHT
 
 st.set_page_config(page_title="台股查詢模型", page_icon="📈", layout="wide")
 
@@ -407,6 +407,33 @@ if us_signal:
     else:
         us_badge_class, us_badge_text = "badge-flat", "資料不足"
 
+    # 淨分視覺化:一條 -SCORE_MAX ~ +SCORE_MAX 的橫條,從中間(0分)往漲/跌那一側填色,
+    # 一眼看出這次淨分離「打平」還是「滿分(4個指標都強同向)」有多遠,比只看數字直覺。
+    SCORE_MAX = max(STRENGTH_WEIGHT.values()) * len(US_MARKET_SYMBOLS)
+    score_gauge_html = ""
+    if score is not None:
+        pct = max(0.0, min(100.0, (score + SCORE_MAX) / (2 * SCORE_MAX) * 100))
+        if score > 0:
+            fill_left, fill_width, fill_color = 50, pct - 50, "var(--tw-up)"
+        elif score < 0:
+            fill_left, fill_width, fill_color = pct, 50 - pct, "var(--tw-down)"
+        else:
+            fill_left, fill_width, fill_color = 50, 0, "#9ca3af"
+        # 刻意寫成單行、不縮排——Streamlit 的 markdown 引擎看到多行 HTML 裡有 4 個空白以上的
+        # 縮排會誤判成「縮排程式碼區塊」,導致後面接著的 stat-row HTML 整段變成純文字顯示,
+        # 不會被當成 HTML 渲染(先前這裡用多行縮排字串時就踩到這個坑,改單行後就正常了)。
+        score_gauge_html = (
+            '<div style="margin-top:0.8rem; max-width:360px;">'
+            '<div style="position:relative; height:8px; background:rgba(255,255,255,0.08); border-radius:4px;">'
+            '<div style="position:absolute; left:50%; top:-3px; bottom:-3px; width:2px; background:rgba(255,255,255,0.35);"></div>'
+            f'<div style="position:absolute; left:{fill_left}%; width:{fill_width}%; top:0; bottom:0; background:{fill_color}; border-radius:4px;"></div>'
+            "</div>"
+            '<div style="display:flex; justify-content:space-between; font-size:0.68rem; color:#6b7280; margin-top:3px;">'
+            f"<span>強空 -{SCORE_MAX}</span><span>0</span><span>強多 +{SCORE_MAX}</span>"
+            "</div>"
+            "</div>"
+        )
+
     US_STRENGTH_COLOR = {"強": "var(--accent-gold)", "普通": "#8b93a7", "弱": "#6b7280"}
 
     # 燈號顏色:沿用台股紅漲綠跌慣例,同一個色相用深淺表示強弱(深=強、中=普通、淺=弱),
@@ -470,6 +497,7 @@ if us_signal:
                 <div class="quote-badge {us_badge_class}">{us_badge_text}</div>
                 <div>{light_items}</div>
             </div>
+            {score_gauge_html}
             <div class="stat-row">
                 {stat_items}
             </div>
@@ -481,9 +509,9 @@ if us_signal:
         "小道瓊/那斯達克期貨(YM=F/NQ=F)近24小時交易,涵蓋最新夜盤走勢;費半(^SOX)、"
         "台積電ADR(TSM)是美股現貨收盤價。「強/普通/弱」是今天漲跌幅度跟自己近20日平均"
         "單日波動的比較,不是固定的絕對門檻。淨分是4個指標依強弱加權(弱1分/普通2分/強3分)"
-        "後加總的多空分數,越極端代表訊號越一致越強烈。badge旁邊4個燈號依序對應小道瓊期貨/"
-        "那斯達克期貨/費半/台積電ADR,顏色深淺=強弱、紅漲綠跌(hover可看細節)。"
-        "純觀察參考,不是下單訊號。"
+        f"後加總的多空分數,範圍 ±{SCORE_MAX},橫條顯示淨分離兩端滿分有多遠,越極端代表訊號"
+        "越一致越強烈。badge旁邊4個燈號依序對應小道瓊期貨/那斯達克期貨/費半/台積電ADR,"
+        "顏色深淺=強弱、紅漲綠跌(hover可看細節)。純觀察參考,不是下單訊號。"
     )
 else:
     st.warning("美股夜盤資料抓取失敗,暫時無法顯示連動指標。")
