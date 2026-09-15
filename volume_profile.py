@@ -1,18 +1,27 @@
 """價格籌碼分佈(Volume Profile)——找出離目前收盤價最近的支撐/阻力價位。
 
 概念:把一段期間的股價範圍切成很多價格區間(bin),把每天的成交量依當天 Low~High
-涵蓋哪些區間、按重疊比例分攤進去,還原出「成交量在各個價位的分佈」。分佈的區域高峰
-代表過去有大量換手發生過的價位,通常比較容易形成支撐/阻力(在那個價位持有部位的人多,
-股價跌回/漲回那裡容易有人加碼防守或獲利了結)——高峰在目前收盤價之下當支撐、之上當阻力,
-同一份分佈、同一套峰值偵測邏輯,差別只在篩選方向。
+涵蓋哪些區間、按重疊比例分攤進去,還原出「成交量在各個價位的分佈」。分佈裡量能特別
+密集的價位代表過去有大量換手發生過,通常比較容易形成支撐/阻力(在那個價位持有部位的人多,
+股價跌回/漲回那裡容易有人加碼防守或獲利了結)——密集區在目前收盤價之下當支撐、之上當阻力,
+同一份分佈、同一套選點邏輯,差別只在篩選方向。
 
 daily OHLCV 沒有逐筆成交明細,這裡的「分佈」是用 Low~High 區間近似還原,不是真正的
 逐筆委託成交價格統計。
 
-**距離上限**:近3個月的高低價區間裡,量能高峰不一定剛好落在現價附近——如果這段期間走勢
-偏單邊(例如一路上漲),量能密集區可能還停留在區間低點,離現價很遠,當成「最近支撐」參考
-價值不大。所以只挑離現價 `VOLUME_PROFILE_MAX_DISTANCE_PCT` 以內的高峰,超過這個範圍寧可
+**距離上限**:近3個月的高低價區間裡,量能密集區不一定剛好落在現價附近——如果這段期間走勢
+偏單邊(例如一路上漲),密集區可能還停留在區間低點,離現價很遠,當成「最近支撐」參考
+價值不大。所以只挑離現價 `VOLUME_PROFILE_MAX_DISTANCE_PCT` 以內的候選,超過這個範圍寧可
 少列一個位置,也不列太遠、對短線沒意義的價位(使用者確認用 ±15%,短線交易用途)。
+
+**選點邏輯(前N高量能+最小間距)**:一開始用「嚴格區域高峰」(某bin量能要同時大於左右
+兩側幾個bin)來找支撐/阻力,但實際測試發現有些股票近期的籌碼分佈比較像單一平滑的山丘
+(例如一路趨勢盤,量能從低點連續堆到現價附近的最高點再遞減),這種形狀天然就沒有3個各自
+獨立分開的區域高峰,嚴格判斷法常常湊不滿3個位置。改成:在距離上限內的候選bin依量能由高到低
+排序,依序挑選,只要跟已經選到的位置間距 >= `VOLUME_PROFILE_MIN_SPACING_PCT` 就選進來
+(避免同一坨籌碼裡兩個相鄰bin都被選中,變成重複列同一個位置),直到湊滿 `num_levels` 個或
+候選用完為止——這樣只要籌碼分佈裡有夠分散的量能區,通常都能湊滿3個;真的整段都是同一坨
+籌碼、完全分不開的極端情況,才會少於3個。
 """
 
 import numpy as np
@@ -20,8 +29,8 @@ import pandas as pd
 
 VOLUME_PROFILE_LOOKBACK_DAYS = 60  # 近3個月交易日——使用者做短線交易,確認用這個區間
 VOLUME_PROFILE_BINS = 50
-VOLUME_PROFILE_PEAK_WINDOW = 2  # 區域高峰要比左右各幾個 bin 都高,數字越大雜訊越少
 VOLUME_PROFILE_MAX_DISTANCE_PCT = 0.15  # 離現價超過這個比例就不列入,使用者確認短線用±15%
+VOLUME_PROFILE_MIN_SPACING_PCT = 0.02  # 挑選出的位置彼此至少要距離現價這個比例,避免同一坨籌碼被拆成兩個位置
 
 
 def _build_volume_histogram(price_df: pd.DataFrame, num_bins: int) -> tuple[np.ndarray, np.ndarray]:
@@ -48,7 +57,11 @@ def _build_volume_histogram(price_df: pd.DataFrame, num_bins: int) -> tuple[np.n
 
 
 def _find_nearest_peaks(price_df: pd.DataFrame, num_levels: int, above: bool) -> list[dict]:
-    """核心邏輯,支撐(above=False)跟阻力(above=True)共用同一套峰值偵測,只差篩選方向。"""
+    """核心邏輯,支撐(above=False)跟阻力(above=True)共用同一套選點邏輯,只差篩選方向。
+
+    見模組 docstring 的「選點邏輯」說明:在距離上限內的候選bin依量能由高到低貪婪挑選,
+    彼此間距不足 `VOLUME_PROFILE_MIN_SPACING_PCT` 就跳過,直到湊滿 num_levels 或候選用完。
+    """
     window = price_df.tail(VOLUME_PROFILE_LOOKBACK_DAYS).dropna(subset=["Low", "High", "Volume", "Close"])
     if len(window) < 5:
         return []
@@ -56,29 +69,25 @@ def _find_nearest_peaks(price_df: pd.DataFrame, num_levels: int, above: bool) ->
     close = float(window["Close"].iloc[-1])
     bin_centers, volume_per_bin = _build_volume_histogram(window, VOLUME_PROFILE_BINS)
 
-    n = VOLUME_PROFILE_PEAK_WINDOW
-    peaks = []
-    for i in range(n, len(volume_per_bin) - n):
-        v = volume_per_bin[i]
-        if v <= 0:
-            continue
-        neighbors = np.concatenate([volume_per_bin[i - n : i], volume_per_bin[i + 1 : i + 1 + n]])
-        if v > neighbors.max():
-            peaks.append({"price": float(bin_centers[i]), "volume": float(v)})
-
     max_distance = close * VOLUME_PROFILE_MAX_DISTANCE_PCT
+    min_spacing = close * VOLUME_PROFILE_MIN_SPACING_PCT
+
     if above:
-        candidates = sorted(
-            (p for p in peaks if close < p["price"] <= close + max_distance),
-            key=lambda p: p["price"],
-        )
+        in_range = [(p, v) for p, v in zip(bin_centers, volume_per_bin) if close < p <= close + max_distance and v > 0]
     else:
-        candidates = sorted(
-            (p for p in peaks if close - max_distance <= p["price"] < close),
-            key=lambda p: p["price"],
-            reverse=True,
-        )
-    return candidates[:num_levels]
+        in_range = [(p, v) for p, v in zip(bin_centers, volume_per_bin) if close - max_distance <= p < close and v > 0]
+
+    in_range.sort(key=lambda pv: pv[1], reverse=True)  # 量能由高到低貪婪挑選
+
+    picked: list[dict] = []
+    for price, vol in in_range:
+        if len(picked) == num_levels:
+            break
+        if all(abs(price - p["price"]) >= min_spacing for p in picked):
+            picked.append({"price": float(price), "volume": float(vol)})
+
+    picked.sort(key=lambda p: p["price"], reverse=not above)  # 依離收盤價由近到遠排序
+    return picked
 
 
 def find_nearest_supports(price_df: pd.DataFrame, num_supports: int = 3) -> list[dict]:
