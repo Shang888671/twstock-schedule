@@ -15,11 +15,6 @@
   台股權值最大的一檔,ADR 漲跌常常直接預示台積電/大盤隔天怎麼走,跟 ^SOX 一樣用現貨
   (沒有期貨)。
 
-綜合方向用「幾個漲、幾個跌」的多數決,不是要求全部一致才算數:TSM ADR 是單一個股,
-偶爾會因為台積電自己的消息(法說會、除息、ADR溢價/折價)脫離大盤走勢,如果要求 4 個
-指標全部同向才判得出方向,反而會讓「不一致」出現的頻率大增,參考價值不增反減,違背
-當初加更多指標想提高參考價值的本意。
-
 每個指標另外附「強弱」標記——使用者問「這個漲跌算強還是弱」,確認要跟自己近期比,不是
 用固定的絕對門檻(例如±1%)。做法:算出「今天以前」`STRENGTH_WINDOW_DAYS` 個交易日的
 平均單日漲跌幅度(絕對值)當基準,今天的漲跌幅度對這個基準的倍數 >= 1.5 倍算「強」、
@@ -27,6 +22,18 @@
 不然今天一根大漲大跌會把自己的比較基準也一起墊高,變得比不出強弱。這個做法的好處是
 門檻會自動跟著各指標自己的波動習慣調整(例如那斯達克期貨本來就比小道瓊期貨愛大起大落,
 基準也會跟著比較高,不會用同一把絕對尺去評斷不同指標)。
+
+綜合方向改用「強弱加權分數」,不是單純「幾個漲、幾個跌」多數決——舊版多數決有個明顯
+盲點:如果2個指標「普通」上漲、2個指標「強」下跌,單純數人頭會打成平手「不一致(2:2)」,
+但直覺上這種組合其實偏空氣氛更重,只是被多數決抹平了。改法:每個指標依強弱給權重
+(弱=1、普通=2、強=3,`STRENGTH_WEIGHT`),乘上方向正負號後加總得出淨分數(`score`,
+範圍 -12~+12,4個指標都是「強」同向時打到滿分),再依 `SCORE_STRONG_THRESHOLD` 分成
+「強多/偏多/中性/偏空/強空」五級。強弱資料不足(近期資料不到 `STRENGTH_WINDOW_DAYS`
+天)的指標,算分時退回跟「普通」一樣的權重(2),不會整個被排除在外。
+
+**這組權重(1:2:3)、強的門檻(±5分)都是主觀訂的,不是統計驗證過的數字**——跟強弱標記
+本身的 1.5/0.5 倍門檻一樣,單純是「拿現有的強弱標記做加權」這個直覺想法的實作,之後如果
+使用者想調整權重或改門檻,直接改這幾個常數即可,不用動其他邏輯。
 """
 
 import yfinance as yf
@@ -41,6 +48,10 @@ US_MARKET_SYMBOLS = {
 STRENGTH_WINDOW_DAYS = 20
 STRENGTH_STRONG_RATIO = 1.5
 STRENGTH_WEAK_RATIO = 0.5
+
+STRENGTH_WEIGHT = {"強": 3, "普通": 2, "弱": 1}
+DEFAULT_STRENGTH_WEIGHT = 2  # 強弱資料不足時,算分退回跟「普通」同等權重
+SCORE_STRONG_THRESHOLD = 5  # 滿分是 4 指標 * 3(強) = 12,約40%當「強多/強空」的門檻
 
 
 def _latest_change(symbol: str) -> dict | None:
@@ -82,29 +93,39 @@ def _latest_change(symbol: str) -> dict | None:
     }
 
 
-def get_us_overnight_signal() -> dict:
-    """回傳每個指標各自最新漲跌幅(含強弱標記),以及依「幾個漲、幾個跌」統計出的綜合方向摘要。
+def _score_label(score: float) -> str:
+    if score >= SCORE_STRONG_THRESHOLD:
+        return "強多"
+    if score > 0:
+        return "偏多"
+    if score == 0:
+        return "中性"
+    if score > -SCORE_STRONG_THRESHOLD:
+        return "偏空"
+    return "強空"
 
-    綜合方向用抓得到資料的指標裡漲跌數量的多數決:漲的多 -> "偏多"、跌的多 -> "偏空"、
-    平手 -> "不一致";一個資料都抓不到時回傳 None。`direction_ratio` 是對應的比例文字
-    (例如 "3/4"、平手時是 "2:2"),給呼叫端顯示用。
+
+def get_us_overnight_signal() -> dict:
+    """回傳每個指標各自最新漲跌幅(含強弱標記),以及強弱加權後的綜合多空分數。
+
+    `score`:每個指標依強弱給權重(見模組 docstring 的 `STRENGTH_WEIGHT`)、乘上漲跌
+    方向正負號後加總,範圍 -12~+12,正代表偏多、負代表偏空,數值越極端代表訊號越一致
+    越強烈。`score_label` 是對應的五級文字("強多"/"偏多"/"中性"/"偏空"/"強空")。
+    一個資料都抓不到時兩者都回傳 None。
     """
     results = {key: _latest_change(symbol) for key, (symbol, _) in US_MARKET_SYMBOLS.items()}
 
     available = [r for r in results.values() if r is not None]
-    direction, direction_ratio = None, None
+    score, score_label = None, None
     if available:
-        up = sum(1 for r in available if r["change_pct"] > 0)
-        down = sum(1 for r in available if r["change_pct"] < 0)
-        total = len(available)
-        if up > down:
-            direction, direction_ratio = "偏多", f"{up}/{total}"
-        elif down > up:
-            direction, direction_ratio = "偏空", f"{down}/{total}"
-        else:
-            direction, direction_ratio = "不一致", f"{up}:{down}"
+        score = sum(
+            (1 if r["change_pct"] > 0 else (-1 if r["change_pct"] < 0 else 0))
+            * STRENGTH_WEIGHT.get(r["strength"], DEFAULT_STRENGTH_WEIGHT)
+            for r in available
+        )
+        score_label = _score_label(score)
 
-    return {**results, "direction": direction, "direction_ratio": direction_ratio}
+    return {**results, "score": score, "score_label": score_label}
 
 
 if __name__ == "__main__":
@@ -116,7 +137,7 @@ if __name__ == "__main__":
             print(f"{label}:{r['close']:,.2f} ({r['change_pct']:+.2f}%) @ {r['asof']}{strength_str}")
         else:
             print(f"{label}:資料不足")
-    if result["direction"]:
-        print(f"綜合方向:{result['direction']}({result['direction_ratio']})")
+    if result["score"] is not None:
+        print(f"綜合多空分數:{result['score']:+d}（{result['score_label']}）")
     else:
-        print("綜合方向:無法判斷(資料不足)")
+        print("綜合多空分數:無法判斷(資料不足)")

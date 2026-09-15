@@ -396,14 +396,14 @@ except Exception:
     us_signal = None
 
 if us_signal:
-    direction = us_signal["direction"]
-    ratio = us_signal["direction_ratio"]
-    if direction == "偏多":
-        us_badge_class, us_badge_text = "badge-up", f"▲ 偏多({ratio})"
-    elif direction == "偏空":
-        us_badge_class, us_badge_text = "badge-down", f"▼ 偏空({ratio})"
-    elif direction == "不一致":
-        us_badge_class, us_badge_text = "badge-flat", f"▬ 方向不一致({ratio})"
+    score = us_signal["score"]
+    score_label = us_signal["score_label"]
+    if score_label in ("強多", "偏多"):
+        us_badge_class, us_badge_text = "badge-up", f"▲ {score_label}(淨分{score:+d})"
+    elif score_label in ("強空", "偏空"):
+        us_badge_class, us_badge_text = "badge-down", f"▼ {score_label}(淨分{score:+d})"
+    elif score_label == "中性":
+        us_badge_class, us_badge_text = "badge-flat", f"▬ 中性(淨分{score:+d})"
     else:
         us_badge_class, us_badge_text = "badge-flat", "資料不足"
 
@@ -479,10 +479,11 @@ if us_signal:
     )
     st.caption(
         "小道瓊/那斯達克期貨(YM=F/NQ=F)近24小時交易,涵蓋最新夜盤走勢;費半(^SOX)、"
-        "台積電ADR(TSM)是美股現貨收盤價。方向用「幾個漲、幾個跌」多數決判定;"
-        "「強/普通/弱」是今天漲跌幅度跟自己近20日平均單日波動的比較,不是固定的絕對門檻。"
-        "badge旁邊4個燈號依序對應小道瓊期貨/那斯達克期貨/費半/台積電ADR,顏色深淺=強弱、"
-        "紅漲綠跌(hover可看細節)。純觀察參考,不是下單訊號。"
+        "台積電ADR(TSM)是美股現貨收盤價。「強/普通/弱」是今天漲跌幅度跟自己近20日平均"
+        "單日波動的比較,不是固定的絕對門檻。淨分是4個指標依強弱加權(弱1分/普通2分/強3分)"
+        "後加總的多空分數,越極端代表訊號越一致越強烈。badge旁邊4個燈號依序對應小道瓊期貨/"
+        "那斯達克期貨/費半/台積電ADR,顏色深淺=強弱、紅漲綠跌(hover可看細節)。"
+        "純觀察參考,不是下單訊號。"
     )
 else:
     st.warning("美股夜盤資料抓取失敗,暫時無法顯示連動指標。")
