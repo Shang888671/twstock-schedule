@@ -409,6 +409,36 @@ if us_signal:
 
     US_STRENGTH_COLOR = {"強": "var(--accent-gold)", "普通": "#8b93a7", "弱": "#6b7280"}
 
+    # 燈號顏色:沿用台股紅漲綠跌慣例,同一個色相用深淺表示強弱(深=強、中=普通、淺=弱),
+    # 不用傳統紅黃綠三色燈號——那套「紅=差/綠=好」的語意會跟這裡「紅=漲」的配色衝突。
+    US_LIGHT_COLORS = {
+        ("up", "強"): "#b91c1c",
+        ("up", "普通"): "#ef4444",
+        ("up", "弱"): "#fca5a5",
+        ("down", "強"): "#15803d",
+        ("down", "普通"): "#22c55e",
+        ("down", "弱"): "#86efac",
+    }
+    US_LIGHT_FLAT_COLOR = "#9ca3af"
+
+    def _us_light_html(label, r):
+        if not r:
+            return (
+                f'<span title="{label}:資料不足" style="display:inline-block; width:11px; height:11px; '
+                f'border-radius:50%; background:{US_LIGHT_FLAT_COLOR}; margin-right:6px; vertical-align:middle;"></span>'
+            )
+        if r["change_pct"] == 0:
+            color, detail = US_LIGHT_FLAT_COLOR, "持平"
+        else:
+            sign = "up" if r["change_pct"] > 0 else "down"
+            strength = r.get("strength") or "普通"
+            color = US_LIGHT_COLORS[(sign, strength)]
+            detail = f"{r['change_pct']:+.2f}%" + (f"({r['strength']})" if r.get("strength") else "")
+        return (
+            f'<span title="{label}:{detail}" style="display:inline-block; width:11px; height:11px; '
+            f'border-radius:50%; background:{color}; margin-right:6px; vertical-align:middle;"></span>'
+        )
+
     def _us_stat_html(label, r):
         if not r:
             return f'<div class="stat-item"><div class="label">{label}</div><div class="value">—</div></div>'
@@ -429,12 +459,16 @@ if us_signal:
     stat_items = "".join(
         _us_stat_html(label, us_signal[key]) for key, (_, label) in US_MARKET_SYMBOLS.items()
     )
+    light_items = "".join(
+        _us_light_html(label, us_signal[key]) for key, (_, label) in US_MARKET_SYMBOLS.items()
+    )
     st.markdown(
         f"""
         <div class="quote-card">
             <div class="quote-symbol">🌙 美股夜盤連動指標</div>
             <div class="quote-price-row">
                 <div class="quote-badge {us_badge_class}">{us_badge_text}</div>
+                <div>{light_items}</div>
             </div>
             <div class="stat-row">
                 {stat_items}
@@ -447,7 +481,8 @@ if us_signal:
         "小道瓊/那斯達克期貨(YM=F/NQ=F)近24小時交易,涵蓋最新夜盤走勢;費半(^SOX)、"
         "台積電ADR(TSM)是美股現貨收盤價。方向用「幾個漲、幾個跌」多數決判定;"
         "「強/普通/弱」是今天漲跌幅度跟自己近20日平均單日波動的比較,不是固定的絕對門檻。"
-        "純觀察參考,不是下單訊號。"
+        "badge旁邊4個燈號依序對應小道瓊期貨/那斯達克期貨/費半/台積電ADR,顏色深淺=強弱、"
+        "紅漲綠跌(hover可看細節)。純觀察參考,不是下單訊號。"
     )
 else:
     st.warning("美股夜盤資料抓取失敗,暫時無法顯示連動指標。")
