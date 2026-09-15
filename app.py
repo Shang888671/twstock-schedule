@@ -4,7 +4,6 @@
 """
 
 import json
-from datetime import date, timedelta
 
 import pandas as pd
 import yfinance as yf
@@ -13,7 +12,6 @@ import streamlit.components.v1 as components
 
 from fetch_data import get_quote, get_history, to_yf_symbol, get_chinese_name
 from indicators import add_indicators
-from dcf import run_dcf
 from volume_profile import find_nearest_supports, find_nearest_resistances
 
 st.set_page_config(page_title="台股查詢模型", page_icon="📈", layout="wide")
@@ -98,7 +96,7 @@ st.markdown(CSS, unsafe_allow_html=True)
 
 with st.sidebar:
     st.markdown("### 📈 台股查詢模型")
-    st.caption("即時報價・技術指標・做多訊號・DCF 估值")
+    st.caption("即時報價・技術指標・做多訊號")
     st.divider()
     code = st.text_input("股票代號", value="2330", help="輸入純數字代號,例如 2330")
     otc = st.checkbox("上櫃股票", value=False, help="預設為上市股票")
@@ -380,7 +378,7 @@ name = load_name(code, otc)
 st.markdown(
     f"""<div class="app-header">
         <h1>📈 台股查詢模型 <span class="badge-gold">TW MARKET</span></h1>
-        <div class="sub">即時報價・技術指標・做多訊號・DCF 估值 — 學習用途,非投資建議</div>
+        <div class="sub">即時報價・技術指標・做多訊號 — 學習用途,非投資建議</div>
     </div>""",
     unsafe_allow_html=True,
 )
@@ -426,9 +424,7 @@ except Exception as e:
     st.error(f"抓取歷史資料失敗:{e}")
     st.stop()
 
-tab_chart, tab_ai, tab_scan, tab_backtest, tab_dcf = st.tabs(
-    ["📊 技術分析", "🎯 做多訊號", "🔎 分點掃描", "🧪 回測", "💰 DCF 估值"]
-)
+tab_chart, tab_ai, tab_scan = st.tabs(["📊 技術分析", "🎯 做多訊號", "🔎 分點掃描"])
 
 # --- 技術分析 ---
 with tab_chart:
@@ -687,158 +683,3 @@ with tab_scan:
             st.error(f"RS 排行計算失敗:{e}")
     st.markdown("</div>", unsafe_allow_html=True)
 
-# --- 回測 ---
-with tab_backtest:
-    st.markdown('<div class="section-card">', unsafe_allow_html=True)
-    st.markdown('<div class="section-title">🧪 回測「法人+權證」做多訊號</div>', unsafe_allow_html=True)
-    st.caption(
-        "回測「🎯 做多訊號」分頁裡規則的前兩個條件(三大法人近10天70%正買超、認購權證近1天≥50萬檔數≥1筆),"
-        "驗證訊號出現後隔日的實際勝率/平均報酬,並跟「不篩訊號、全部交易日」的基準線比較,看訊號有沒有真的多出邊際。"
-        "**只回測前兩個條件**——第三個條件(已知大戶分點)沒有歷史資料可回測,那份資料是手動匯出的當下快照,"
-        "TWSE 官方分點系統有 CAPTCHA 擋自動查詢,無法回溯歷史。**結果沒有計入手續費/證交稅/滑價**,實際淨報酬會更低。"
-    )
-
-    bt_scope = st.radio("回測範圍", ["只回測目前查詢的這檔股票", "回測整個 .dsl 股票池"], horizontal=True)
-    if bt_scope == "回測整個 .dsl 股票池":
-        st.caption(
-            "不管股票池有幾檔股票,抓法人/權證資料的請求數只跟天數成正比(逐日抓一次全市場資料,"
-            "一次分給股票池裡所有股票),所以回測整個股票池不會比回測一檔股票慢很多。"
-        )
-
-    bt_col1, bt_col2 = st.columns(2)
-    bt_start = bt_col1.date_input("開始日期", value=date.today() - timedelta(days=180))
-    bt_end = bt_col2.date_input("結束日期", value=date.today())
-
-    if st.button("🧪 開始回測"):
-        if bt_start >= bt_end:
-            st.error("開始日期必須早於結束日期。")
-        else:
-            try:
-                from backtest import backtest_universe, summarize_backtest
-
-                if bt_scope == "回測整個 .dsl 股票池":
-                    from xq_watchlist import get_stock_futures_codes_from_watchlists
-
-                    codes = sorted(get_stock_futures_codes_from_watchlists())
-                    if not codes:
-                        st.warning("找不到 .dsl 自選股清單,請確認 xq_branch_data/ 資料夾裡有匯出的 .dsl 檔案。")
-                else:
-                    codes = [code]
-
-                if codes:
-                    progress = st.progress(0.0, text="回測中...")
-
-                    def _on_bt_progress(stage, done, total):
-                        progress.progress(done / total if total else 1.0, text=f"回測中...【{stage}】{done}/{total}")
-
-                    signal_days, all_days = backtest_universe(
-                        codes, bt_start.isoformat(), bt_end.isoformat(), progress_callback=_on_bt_progress
-                    )
-                    progress.empty()
-
-                    if all_days.empty:
-                        st.info("這個區間/範圍沒有抓到任何可用的交易日資料。")
-                    else:
-                        summary = summarize_backtest(signal_days, all_days)
-                        sc, bc, soc = summary["signal_close"], summary["baseline_close"], summary["signal_open_close"]
-
-                        if sc["count"] == 0:
-                            st.info(f"這段區間/範圍內訊號從未觸發過(基準樣本共 {bc['count']} 個交易日),沒有東西可以算勝率。")
-                        else:
-                            st.success(f"訊號共觸發 {sc['count']} 次(基準樣本共 {bc['count']} 個交易日)")
-
-                            m1, m2, m3, m4 = st.columns(4)
-                            m1.metric(
-                                "訊號隔日勝率(收盤買)",
-                                f"{sc['win_rate']*100:.0f}%",
-                                delta=f"基準線 {bc['win_rate']*100:.0f}%",
-                                delta_color="off",
-                            )
-                            m2.metric(
-                                "訊號隔日平均報酬(收盤買)",
-                                f"{sc['avg_return']*100:+.2f}%",
-                                delta=f"基準線 {bc['avg_return']*100:+.2f}%",
-                                delta_color="off",
-                            )
-                            m3.metric(
-                                "訊號隔日勝率(早盤買)",
-                                f"{soc['win_rate']*100:.0f}%" if soc["win_rate"] is not None else "N/A",
-                            )
-                            m4.metric(
-                                "訊號隔日平均報酬(早盤買)",
-                                f"{soc['avg_return']*100:+.2f}%" if soc["avg_return"] is not None else "N/A",
-                            )
-                            st.caption(
-                                "「早盤買」是隔日開盤買、隔日收盤賣,對應原始理論(大戶隔日早盤拉高出貨);"
-                                "「收盤買」是訊號當天收盤買、隔日收盤賣,是比較標準的隔日報酬率定義。"
-                            )
-
-                            display = signal_days.copy()
-                            if bt_scope == "回測整個 .dsl 股票池":
-                                from stock_futures import get_stock_futures_name
-
-                                display["名稱"] = display["code"].map(lambda c: get_stock_futures_name(c) or "")
-                            display["date"] = display["date"].dt.strftime("%Y-%m-%d")
-                            display["institutional_ratio"] = display["institutional_ratio"].map(lambda x: f"{x*100:.0f}%")
-                            display["forward_return_close"] = display["forward_return_close"].map(lambda x: f"{x*100:+.2f}%")
-                            display["forward_return_open_close"] = display["forward_return_open_close"].map(lambda x: f"{x*100:+.2f}%")
-                            cols = (
-                                ["code"]
-                                + (["名稱"] if "名稱" in display.columns else [])
-                                + ["date", "institutional_ratio", "warrant_count", "forward_return_close", "forward_return_open_close"]
-                            )
-                            st.dataframe(
-                                display[cols].rename(
-                                    columns={
-                                        "code": "代號",
-                                        "date": "訊號日期",
-                                        "institutional_ratio": "法人正買超比例",
-                                        "warrant_count": "權證大額筆數",
-                                        "forward_return_close": "隔日報酬(收盤買)",
-                                        "forward_return_open_close": "隔日報酬(早盤買)",
-                                    }
-                                ),
-                                use_container_width=True,
-                                hide_index=True,
-                            )
-            except Exception as e:
-                st.error(f"回測失敗:{e}")
-
-    st.markdown(
-        '<div class="disclaimer">回測結果基於歷史資料,不保證未來表現,也沒有計入交易成本,僅供學習參考,不構成投資建議。</div>',
-        unsafe_allow_html=True,
-    )
-    st.markdown("</div>", unsafe_allow_html=True)
-
-# --- DCF 估值 ---
-with tab_dcf:
-    st.markdown('<div class="section-card">', unsafe_allow_html=True)
-    st.markdown('<div class="section-title">DCF 現金流折現估值</div>', unsafe_allow_html=True)
-
-    d1, d2, d3 = st.columns(3)
-    growth_rate = d1.slider("未來成長率假設", 0.0, 0.30, 0.08, 0.01)
-    terminal_growth = d2.slider("永續成長率假設", 0.0, 0.05, 0.025, 0.005)
-    discount_rate = d3.slider("折現率(WACC)假設", terminal_growth + 0.01, 0.25, 0.10, 0.01)
-
-    try:
-        dcf_result = run_dcf(
-            code, otc=otc, growth_rate=growth_rate, terminal_growth=terminal_growth, discount_rate=discount_rate
-        )
-        upside = dcf_result["upside_pct"]
-        c1, c2, c3 = st.columns(3)
-        c1.metric("每股內在價值(估算)", f"{dcf_result['intrinsic_value_per_share']:,.2f}")
-        c2.metric("目前股價", f"{dcf_result['current_price']:,.2f}")
-        c3.metric(
-            "估值差距",
-            f"{upside:.1f}%" if upside is not None else "N/A",
-            delta=f"{upside:.1f}%" if upside is not None else None,
-            delta_color="inverse",
-        )
-    except Exception as e:
-        st.error(f"DCF 計算失敗:{e}")
-
-    st.markdown(
-        '<div class="disclaimer">DCF 結果對成長率/折現率假設極度敏感,僅供學習參考,不構成投資建議。</div>',
-        unsafe_allow_html=True,
-    )
-    st.markdown("</div>", unsafe_allow_html=True)

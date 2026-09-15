@@ -251,7 +251,7 @@ def evaluate_light_signals(code: str, price_df: pd.DataFrame, otc: bool = False)
     對上櫃股票直接丟例外整組失敗——這裡希望其他條件在上櫃股票上還是能正常顯示。
 
     單一股票用這個函式;要一次掃整個股票池(例如 .dsl 自選清單)用下面的 `scan_light_signals()`
-    ——那個函式用跟 `backtest.py` 一樣的「逐日批次抓取」策略,不是對每一檔股票各自呼叫這個函式。
+    ——那個函式用「逐日批次抓取」策略,不是對每一檔股票各自呼叫這個函式。
     """
     if otc:
         institutional_result = {"passed": False, "detail": "上櫃股票不支援三大法人資料"}
@@ -271,7 +271,7 @@ def scan_light_signals(codes, otc_map: dict | None = None, sleep: float = 0.3, p
     """對一批股票(例如 .dsl 個股期貨自選清單)一次算出「條件達成燈號」,回傳依達成數由高到低排序的 list。
 
     法人、權證資料源本來就回傳「單一交易日、全市場」的完整資料(見 `chip_data.py` 的
-    `*_multi` 函式說明),所以這裡沿用 `backtest.py` 的「逐日批次抓取」策略:整個股票池的
+    `*_multi` 函式說明),所以這裡用「逐日批次抓取」策略:整個股票池的
     法人資料、權證資料各自只抓一輪,不是對每一檔股票各自打一次 API。大盤指數(RS 條件用)
     也只抓一次、所有股票共用。個股股價本身沒有這種全市場快照 API,還是得逐檔抓
     (跟 RS 排行分頁的既有做法一致)。
