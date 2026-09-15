@@ -35,6 +35,26 @@ def _to_int(s: str) -> int:
     return int(s)
 
 
+def _parse_price_direction(change_html) -> bool | None:
+    """從 MI_INDEX『漲跌(+/-)』欄位判斷該檔權證當天收盤價是漲(True)還是跌(False)。
+
+    這是「用當天漲跌代理買賣方向」的權宜做法(見 signals.py 的說明)——TWSE 每日收盤彙總
+    資料只有「一天加總的成交金額」,沒有逐筆成交+報價可以判斷每一筆是主動買進還是賣出,
+    只能退而求其次,假設「當天股價收紅=偏向買方主導、收黑=偏向賣方主導」當粗略代理,
+    不是真正的買賣方向判定。
+
+    欄位格式是 TWSE 包好的 HTML 片段,例如 "<p style= color:red>+</p>"(漲,紅色)、
+    "<p style= color:green>-</p>"(跌,綠色)、"<p>X</p>"(平盤)、"<p> </p>"(當天無成交)——
+    平盤/無成交回傳 None(不硬猜方向)。
+    """
+    text = str(change_html)
+    if "color:red" in text:
+        return True
+    if "color:green" in text:
+        return False
+    return None
+
+
 def get_institutional_flow(code: str, start_date: str, end_date: str, sleep: float = 0.3) -> pd.DataFrame:
     """取得個股「三大法人買賣超」逐日資料(股數)。
 
@@ -183,23 +203,28 @@ def get_stock_call_warrant_detail(code: str, date_str: str):
     回傳:
     - None:代表那天不是交易日或抓取失敗(呼叫端應該往前一天重試)
     - 空 DataFrame:那天有交易,但這檔股票當天沒有任何認購權證成交(視為 0 筆,不用重試)
-    - 非空 DataFrame,欄位:warrant_code, warrant_name, volume(成交股數), value(成交金額)
+    - 非空 DataFrame,欄位:warrant_code, warrant_name, volume(成交股數), value(成交金額),
+      price_up(該權證當天收盤是否收紅,True/False/None——見 `_parse_price_direction()`)
     """
     table = _fetch_warrant_table(date_str, put=False)
     if table.empty:
         return None
     match = table[table["標的代號"].astype(str).str.strip() == code].copy()
     if match.empty:
-        return pd.DataFrame(columns=["warrant_code", "warrant_name", "volume", "value"])
+        return pd.DataFrame(columns=["warrant_code", "warrant_name", "volume", "value", "price_up"])
     match["volume"] = pd.to_numeric(match["成交股數"].astype(str).str.replace(",", ""), errors="coerce").fillna(0)
     match["value"] = pd.to_numeric(match["成交金額"].astype(str).str.replace(",", ""), errors="coerce").fillna(0)
+    match["price_up"] = match["漲跌(+/-)"].apply(_parse_price_direction)
     return match.rename(columns={"證券代號": "warrant_code", "證券名稱": "warrant_name"})[
-        ["warrant_code", "warrant_name", "volume", "value"]
+        ["warrant_code", "warrant_name", "volume", "value", "price_up"]
     ]
 
 
 def get_warrant_large_trade_counts_multi(codes, start_date: str, end_date: str, threshold: float, sleep: float = 0.3, progress_callback=None) -> dict:
-    """一批股票、一段區間,逐日算出「當天單一認購權證成交金額 >= threshold 的檔數」。
+    """一批股票、一段區間,逐日算出「當天單一認購權證成交金額 >= threshold 且當天收紅的檔數」。
+
+    只算收紅(price_up=True)的權證,理由見 `_parse_price_direction()`——大額成交金額不代表
+    是買方主導,可能是主力倒貨,用「當天股價有沒有收紅」當粗略代理,過濾掉收黑的大額成交。
 
     用途是幫 `signals.py` 的「認購權證單日大額筆數」條件做歷史回測——跟
     `get_institutional_flow_multi` 同樣的道理:MI_INDEX 每次查詢回傳的是「單一交易日、
@@ -236,9 +261,10 @@ def get_warrant_large_trade_counts_multi(codes, start_date: str, end_date: str, 
             call_df = call_df.copy()
             call_df["_value"] = pd.to_numeric(call_df["成交金額"].astype(str).str.replace(",", ""), errors="coerce").fillna(0)
             call_df["_underlying"] = call_df["標的代號"].astype(str).str.strip()
+            call_df["_price_up"] = call_df["漲跌(+/-)"].apply(_parse_price_direction)
             for code in codes:
                 match = call_df[call_df["_underlying"] == code]
-                new_rows[code][d] = int((match["_value"] >= threshold).sum())
+                new_rows[code][d] = int(((match["_value"] >= threshold) & (match["_price_up"] == True)).sum())
         if progress_callback:
             progress_callback(i + 1, len(missing_dates))
         time.sleep(sleep)

@@ -2,10 +2,13 @@
 
 規則(使用者提供的短線交易經驗法則):
 - 三大法人買賣超近 10 個交易日,「合計買賣超為正」的天數佔比 >= 70%,視為法人籌碼偏多。
-- 個股認購權證近 1 個交易日內,單一檔權證「一次」成交金額 >= 50 萬元的檔數 >= 1 筆,
+- 個股認購權證近 1 個交易日內,單一檔權證「一次」成交金額 >= 50 萬元且當天收紅的檔數 >= 1 筆,
   視為主力大買認購權證——隔日沖大戶隔天早盤可能拉高股價出貨(賣權證),提供短線做多的價差空間。
   (這裡的「一次」是以「單一權證代號當天的成交總金額」為單位,不是真正逐筆成交明細——
-  TWSE 公開資料只到「每檔權證、每天」的加總,沒有到「每一筆成交」的等級。)
+  TWSE 公開資料只到「每檔權證、每天」的加總,沒有到「每一筆成交」的等級,所以沒辦法直接判斷
+  這筆大額成交金額是買方主導還是賣方主導,大額成交也可能是主力倒貨造成的。這裡用「當天股價
+  有沒有收紅」當粗略代理——只算收紅的大額成交,過濾掉收黑(可能是倒貨)的大額成交,不是真正
+  的買賣方向判定,只是在沒有逐筆成交+報價資料的前提下,退而求其次的做法。)
 - （選用,第三個條件)個股「認購權證」買方分點,滿足以下任一項就算達標:
   (a) 使用者指名的「已知隔日沖大戶分點」(見 `xq_branch.KNOWN_OVERNIGHT_FLIP_BRANCHES`)
       有出現在買方 TOP15 名單裡且買超金額為正,或
@@ -58,7 +61,7 @@ def _recent_call_warrant_detail(code: str, window_days: int, max_lookback: int =
         day -= pd.Timedelta(days=1)
         tries += 1
     if not frames:
-        return pd.DataFrame(columns=["warrant_code", "warrant_name", "volume", "value", "date"])
+        return pd.DataFrame(columns=["warrant_code", "warrant_name", "volume", "value", "price_up", "date"])
     return pd.concat(frames, ignore_index=True)
 
 
@@ -81,7 +84,11 @@ def evaluate_long_signal(code: str, otc: bool = False) -> dict:
     institutional_signal = institutional_ratio >= INSTITUTIONAL_POSITIVE_RATIO_THRESHOLD
 
     warrant_detail = _recent_call_warrant_detail(code, WARRANT_WINDOW_DAYS)
-    large_trades = warrant_detail[warrant_detail["value"] >= WARRANT_SINGLE_TRADE_THRESHOLD] if not warrant_detail.empty else warrant_detail
+    large_trades = (
+        warrant_detail[(warrant_detail["value"] >= WARRANT_SINGLE_TRADE_THRESHOLD) & (warrant_detail["price_up"] == True)]
+        if not warrant_detail.empty
+        else warrant_detail
+    )
     warrant_large_trade_count = int(len(large_trades))
     warrant_signal = warrant_large_trade_count >= WARRANT_LARGE_TRADE_MIN_COUNT
 
@@ -169,23 +176,30 @@ def _institutional_turn_signal(code: str) -> dict:
 
 
 def _warrant_strong_from_count(count: int) -> dict:
-    """核心判斷邏輯,吃「已經算好的當天大額筆數」——單股查詢跟批次掃描共用。"""
+    """核心判斷邏輯,吃「已經算好的當天大額且收紅筆數」——單股查詢跟批次掃描共用。"""
     passed = count > WARRANT_STRONG_TRADE_MIN_COUNT
-    return {"passed": passed, "detail": f"近{WARRANT_WINDOW_DAYS}天單筆≥50萬檔數:{count}"}
+    return {"passed": passed, "detail": f"近{WARRANT_WINDOW_DAYS}天單筆≥50萬且收紅檔數:{count}"}
 
 
 def _warrant_strong_signal(code: str) -> dict:
-    """近1個交易日,單一檔認購權證成交金額 >=50萬的檔數 > 4(比 evaluate_long_signal 的門檻更嚴格)。
+    """近1個交易日,單一檔認購權證成交金額 >=50萬且當天收紅的檔數 > 4(比 evaluate_long_signal 的門檻更嚴格)。
 
-    detail 額外附上 WARRANT_TIER_THRESHOLDS 每一級門檻各自的筆數(50萬/100萬/150萬/200萬),
-    純粹是給單股查詢時參考買盤強度分布用——只有 50萬這一級的筆數會決定 passed。
+    只算收紅的大額成交,理由見 `evaluate_long_signal()` 模組docstring的說明——大額成交金額
+    不代表是買方主導,用「當天有沒有收紅」當粗略代理過濾掉可能是倒貨造成的大額成交。
+
+    detail 額外附上 WARRANT_TIER_THRESHOLDS 每一級門檻各自的筆數(50萬/100萬/150萬/200萬,
+    同樣只算收紅的),純粹是給單股查詢時參考買盤強度分布用——只有 50萬這一級的筆數會決定 passed。
     """
     warrant_detail = _recent_call_warrant_detail(code, WARRANT_WINDOW_DAYS)
-    large_trades = warrant_detail[warrant_detail["value"] >= WARRANT_SINGLE_TRADE_THRESHOLD] if not warrant_detail.empty else warrant_detail
+    large_trades = (
+        warrant_detail[(warrant_detail["value"] >= WARRANT_SINGLE_TRADE_THRESHOLD) & (warrant_detail["price_up"] == True)]
+        if not warrant_detail.empty
+        else warrant_detail
+    )
     result = _warrant_strong_from_count(int(len(large_trades)))
 
     tier_counts = (
-        [int((warrant_detail["value"] >= t).sum()) for t in WARRANT_TIER_THRESHOLDS]
+        [int(((warrant_detail["value"] >= t) & (warrant_detail["price_up"] == True)).sum()) for t in WARRANT_TIER_THRESHOLDS]
         if not warrant_detail.empty
         else [0] * len(WARRANT_TIER_THRESHOLDS)
     )
@@ -229,7 +243,7 @@ def _assemble_light_conditions(ma_result: dict, institutional_result: dict, warr
     conditions = {
         "ma_breakout": {"label": "股價剛站上6/40/56EMA", **ma_result},
         "institutional_turn": {"label": "法人剛連續轉買超", **institutional_result},
-        "warrant_strong": {"label": "認購權證大額>4筆", **warrant_result},
+        "warrant_strong": {"label": "認購權證收紅大額>4筆", **warrant_result},
         "volume_surge": {"label": "成交量增3日均量以上", **volume_result},
         "rs_above_zero": {"label": "RS強於大盤(0軸之上)", **rs_result},
     }

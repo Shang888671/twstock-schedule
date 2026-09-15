@@ -645,10 +645,16 @@ with tab_ai:
     st.markdown('<div class="section-card">', unsafe_allow_html=True)
     st.markdown('<div class="section-title">🎯 法人 + 權證做多訊號(自訂規則)</div>', unsafe_allow_html=True)
     st.caption(
-        "規則:三大法人近 10 天合計買賣超為正的天數佔比 ≥ 70%,且個股認購權證近 1 天內有單一檔權證成交金額 ≥ 50 萬元,"
+        "規則:三大法人近 10 天合計買賣超為正的天數佔比 ≥ 70%,且個股認購權證近 1 天內有單一檔權證成交金額 ≥ 50 萬元且當天收紅,"
         "兩者同時成立才判定為做多訊號。若有提供 XQ 匯出的分點資料,再加上第三個條件:"
         "已知隔日沖大戶分點(凱基-城中/永豐金-市政/富邦-台南/凱基-岡山/凱基-三重/凱基-高雄)有出現在買方名單且買超為正,"
         "沒有命中的話就退回看「買超第1名分點金額 ≥ 500 萬元」。純粹規則比對,不是模型。"
+    )
+    st.caption(
+        "⚠️ TWSE 公開資料只有「每檔權證當天成交總金額」,無法區分買方主導還是賣方主導(大額成交也可能是主力倒貨),"
+        "所以用「當天股價有沒有收紅」當粗略代理,只算收紅的大額成交——但這只能濾掉整天收黑的假訊號,"
+        "股價上漲的那一天,同一天內仍然可能混有主力倒貨的大額成交(因為權證漲跌高度連動正股當天走勢,"
+        "不是逐筆判斷),不是真正的買賣方向判定,僅供參考。"
     )
     if otc:
         st.caption("三大法人資料只支援上市股票,上櫃股票無法檢查此訊號。")
@@ -673,12 +679,12 @@ with tab_ai:
                 )
                 sc1.caption(f"{sig['institutional_positive_days']}/{sig['institutional_window_days']} 天為正,資料日期 {sig['institutional_asof']}")
                 sc2.metric(
-                    f"認購權證近{sig['warrant_window_days']}天≥50萬檔數",
+                    f"認購權證近{sig['warrant_window_days']}天≥50萬且收紅檔數",
                     f"{sig['warrant_large_trade_count']} 筆",
                     delta="達標 ✓" if sig["warrant_signal"] else "未達 1 筆",
                     delta_color="off",
                 )
-                sc2.caption(f"單一檔權證當天成交金額 ≥ 50 萬才算 1 筆,資料日期 {sig['warrant_asof']}")
+                sc2.caption(f"單一檔權證當天成交金額 ≥ 50 萬且當天收紅才算 1 筆,資料日期 {sig['warrant_asof']}")
 
                 if sig["branch_available"]:
                     known_hits = sig["branch_known_hits"]
@@ -717,7 +723,7 @@ with tab_ai:
     st.caption(
         "5 個獨立條件各自顯示目前有沒有達成,不要求同時成立(跟上面的做多訊號不同,這裡只是計分卡,"
         "進場判斷交給你自己看):① 股價剛同時站上6/40/56EMA(今天剛突破,不是已經站上一段時間)"
-        "② 三大法人近2天剛轉為買超(前一天還是賣超)③ 認購權證近1天單筆≥50萬檔數超過4筆"
+        "② 三大法人近2天剛轉為買超(前一天還是賣超)③ 認購權證近1天單筆≥50萬且當天收紅的檔數超過4筆"
         "④ 成交量超過前3日均量 ⑤ RS(近20天報酬率-加權指數同期報酬率)在0軸之上。"
     )
 
