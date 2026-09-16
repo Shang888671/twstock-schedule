@@ -23,6 +23,12 @@ CACHE_DIR.mkdir(exist_ok=True)
 CACHE_TTL_SECONDS = 7 * 86400  # 公司中文簡稱幾乎不變,快取 7 天,沿用 stock_futures.py 的慣例
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 
+# 櫃買指數(^TWOII)實測發現 yfinance 回傳的資料嚴重過時(fast_info/info 抓到的
+# regularMarketTime 對應到 2024-10-11,不是即時資料,數字也因此是錯的),改用櫃買中心
+# (TPEx)官方 OpenAPI 直接抓——這個端點只回傳「當月」每日行情,不是任意區間的歷史資料,
+# 沒辦法拿來做像加權指數那樣的完整K線圖,只能拿最新一筆當即時報價卡用。
+TPEX_INDEX_URL = "https://www.tpex.org.tw/openapi/v1/tpex_index"
+
 
 def to_yf_symbol(code: str, otc: bool = False) -> str:
     """把純數字股票代號轉成 yfinance 用的代號。
@@ -48,6 +54,38 @@ def get_quote(code: str, otc: bool = False) -> dict:
         "day_low": info.get("dayLow"),
         "volume": info.get("lastVolume"),
     }
+
+
+def get_tpex_otc_index_quote() -> dict | None:
+    """抓櫃買指數(OTC)最新一筆日行情,直接打 TPEx 官方 OpenAPI(不透過 yfinance)。
+
+    回傳格式跟 `get_quote()` 相容(last_price/previous_close/day_high/day_low/volume),
+    多一個 `asof`(資料日期,"YYYYMMDD")方便呼叫端顯示「這是哪一天的收盤」而不是誤以為
+    是當下即時報價——這個端點是每日更新的收盤行情,不是逐筆即時報價。抓取失敗或當月
+    完全沒有資料時回傳 None,呼叫端應該優雅降級。
+    """
+    try:
+        resp = requests.get(TPEX_INDEX_URL, headers=HEADERS, timeout=15)
+        data = resp.json()
+    except Exception:
+        return None
+    if not data:
+        return None
+    latest = data[-1]
+    try:
+        close = float(latest["Close"])
+        change = float(latest["Change"])
+        return {
+            "symbol": "^TWOII",
+            "last_price": close,
+            "previous_close": close - change,
+            "day_high": float(latest["High"]),
+            "day_low": float(latest["Low"]),
+            "volume": None,
+            "asof": latest["Date"],
+        }
+    except (KeyError, ValueError):
+        return None
 
 
 def get_history(

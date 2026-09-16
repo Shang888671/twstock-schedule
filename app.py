@@ -10,7 +10,7 @@ import yfinance as yf
 import streamlit as st
 import streamlit.components.v1 as components
 
-from fetch_data import get_quote, get_history, to_yf_symbol, get_chinese_name
+from fetch_data import get_quote, get_history, to_yf_symbol, get_chinese_name, get_tpex_otc_index_quote
 from indicators import add_indicators
 from volume_profile import find_nearest_supports, find_nearest_resistances
 from us_market import get_us_overnight_signal, US_MARKET_SYMBOLS, STRENGTH_WEIGHT, SCORE_STRONG_THRESHOLD
@@ -110,8 +110,9 @@ with st.sidebar:
         code = "^TWII" if query_mode == "加權指數" else "^TWOII"
         otc = False
         st.caption(
-            "櫃買指數(^TWOII)yfinance只有即時報價,沒有歷史K線資料,技術分析/做多訊號/分點掃描"
-            "功能無法使用。" if query_mode == "櫃買指數" else "加權指數(^TWII)功能跟查個股一樣完整。"
+            "櫃買指數(^TWOII)改抓TPEx官方資料(yfinance資料過時),但只有每日收盤行情,"
+            "沒有歷史K線資料,技術分析/做多訊號/分點掃描功能無法使用。"
+            if query_mode == "櫃買指數" else "加權指數(^TWII)功能跟查個股一樣完整。"
         )
     period = st.selectbox("歷史資料區間", ["3mo", "6mo", "1y", "2y", "5y"], index=2)
     st.divider()
@@ -148,6 +149,11 @@ with st.sidebar:
 @st.cache_data(ttl=300)
 def load_quote(code, otc):
     return get_quote(code, otc=otc)
+
+
+@st.cache_data(ttl=300)
+def load_tpex_otc_index_quote():
+    return get_tpex_otc_index_quote()
 
 
 @st.cache_data(ttl=3600)
@@ -413,7 +419,12 @@ if not code:
     st.stop()
 
 try:
-    quote = load_quote(code, otc)
+    # 櫃買指數不走 yfinance——實測 yfinance 的 ^TWOII 資料嚴重過時(抓到的是2024-10-11的
+    # 舊資料,不是即時的),改用 fetch_data.get_tpex_otc_index_quote() 直接打 TPEx 官方
+    # OpenAPI 拿最新一筆日行情。
+    quote = load_tpex_otc_index_quote() if code == "^TWOII" else load_quote(code, otc)
+    if quote is None:
+        raise RuntimeError("查無資料")
 except Exception as e:
     st.error(f"抓取報價失敗:{e}")
     st.stop()
@@ -587,25 +598,39 @@ else:
     st.warning("美股夜盤資料抓取失敗,暫時無法顯示連動指標。")
 
 # --- 報價卡片 ---
-# 櫃買指數(^TWOII)yfinance只給得出即時報價(previous_close/day_high/day_low/volume全是
-# None),也完全沒有歷史K線資料——用簡化報價卡顯示,技術分析/做多訊號/分點掃描都需要歷史
-# 資料才能運作,直接停在這裡,不往下走個股/加權指數共用的那條完整流程。
+# 櫃買指數(^TWOII)改抓 TPEx 官方 OpenAPI 的當月每日行情(見 get_tpex_otc_index_quote()),
+# 是每日更新的收盤資料,不是逐筆即時報價,而且這個端點也沒有任意區間的歷史資料可以拉,
+# 所以只能顯示一張報價卡,技術分析/做多訊號/分點掃描都需要歷史K線資料才能運作,不支援。
 if code == "^TWOII":
+    otc_change = quote["last_price"] - quote["previous_close"]
+    otc_change_pct = otc_change / quote["previous_close"] * 100
+    if otc_change == 0:
+        otc_badge_class, otc_arrow = "badge-flat", "▬"
+    elif otc_change > 0:
+        otc_badge_class, otc_arrow = "badge-up", "▲"
+    else:
+        otc_badge_class, otc_arrow = "badge-down", "▼"
+    otc_change_str = f"{otc_arrow} {abs(otc_change):.2f} ({abs(otc_change_pct):.2f}%)"
+
     st.markdown(
         f"""
         <div class="quote-card">
             <div class="quote-symbol">{quote['symbol']} · {name}</div>
             <div class="quote-price-row">
                 <div class="quote-price">{quote['last_price']:,.2f}</div>
+                <div class="quote-badge {otc_badge_class}">{otc_change_str}</div>
+            </div>
+            <div class="stat-row">
+                <div class="stat-item"><div class="label">昨收</div><div class="value">{quote['previous_close']:,.2f}</div></div>
+                <div class="stat-item"><div class="label">最高</div><div class="value">{quote['day_high']:,.2f}</div></div>
+                <div class="stat-item"><div class="label">最低</div><div class="value">{quote['day_low']:,.2f}</div></div>
             </div>
         </div>
         """,
         unsafe_allow_html=True,
     )
-    st.info(
-        "yfinance 對櫃買指數只提供即時報價,沒有歷史K線資料——技術分析、做多訊號、分點掃描"
-        "這幾個功能都需要歷史資料才能運作,暫不支援。"
-    )
+    st.caption(f"資料日期:{quote['asof'][:4]}-{quote['asof'][4:6]}-{quote['asof'][6:]}(TPEx官方每日收盤行情,非逐筆即時)")
+    st.info("TPEx 這個資料源沒有任意區間的歷史K線資料,技術分析、做多訊號、分點掃描這幾個功能都需要歷史資料才能運作,暫不支援。")
     st.stop()
 
 last_price = quote["last_price"]
