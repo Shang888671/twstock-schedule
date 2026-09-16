@@ -420,7 +420,7 @@ except Exception as e:
 
 # 指數不是個股,查不到 TWSE ISIN 中文簡稱,yfinance 的 longName 也是亂碼代號(例如
 # "^TWOII,113497,928500"),直接用固定的顯示名稱,不走 load_name() 那套查詢股票的邏輯。
-INDEX_DISPLAY_NAMES = {"^TWII": "加權指數(台股大盤)", "^TWOII": "櫃買指數(TPEx)"}
+INDEX_DISPLAY_NAMES = {"^TWII": "加權指數(台股大盤)", "^TWOII": "櫃買指數(OTC)"}
 name = INDEX_DISPLAY_NAMES[code] if code in INDEX_DISPLAY_NAMES else load_name(code, otc)
 
 st.markdown(
