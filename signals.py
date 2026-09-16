@@ -40,6 +40,8 @@ LIGHT_MA_COLUMNS = ["EMA6", "EMA40", "EMA56"]
 LIGHT_INSTITUTIONAL_LOOKBACK_DAYS = 15
 WARRANT_STRONG_TRADE_MIN_COUNT = 4  # 要求「超過」這個筆數,即 >4(至少5筆)
 LIGHT_VOLUME_AVG_WINDOW = 3
+MARGIN_LOOKBACK_DAYS = 3  # 融資融券只能逐日累積本地快取(見 margin_data.py),這裡只需要「今日 vs 前一筆」
+REVENUE_YOY_THRESHOLD = 0.0
 
 # 權證燈號的門檻分級——只用來在單股查詢時「額外顯示」各門檻各自的筆數,方便自己判斷買盤
 # 強度有多猛;燈號本身「達成/未達成」仍然只看 WARRANT_SINGLE_TRADE_THRESHOLD(50萬)這一級的
@@ -238,25 +240,72 @@ def _rs_above_zero_signal(code: str, otc: bool) -> dict:
     return _rs_above_zero_from_value(compute_rs_vs_benchmark(code, otc=otc))
 
 
-def _assemble_light_conditions(ma_result: dict, institutional_result: dict, warrant_result: dict, volume_result: dict, rs_result: dict) -> dict:
-    """把5個子結果組成 evaluate_light_signals()/scan_light_signals() 共用的回傳格式。"""
+def _margin_health_from_series(margin_df) -> dict:
+    """核心判斷邏輯,吃「已經抓好的融資融券 DataFrame」——單股查詢跟批次掃描共用。
+
+    今日融資餘額 < 前一筆融資餘額 = 散戶籌碼轉健康,這是主觀認定,不是統計驗證過的規則
+    (跟其他幾個條件的免責聲明一致)。這個資料源沒有官方歷史API,只能靠 margin_data.py
+    逐日累積本地快取,樣本不足(少於2筆)時顯示「資料不足」,不是bug——第一次查某檔股票
+    一定會是這個狀態,要連續用過幾天才會開始有數據。
+    """
+    if margin_df is None or len(margin_df) < 2:
+        return {"passed": False, "detail": "資料不足(融資融券只能逐日累積,需連續使用幾天才有數據)"}
+    prev, today = margin_df["margin_balance"].iloc[-2], margin_df["margin_balance"].iloc[-1]
+    passed = today < prev
+    return {"passed": passed, "detail": f"融資餘額(張):{prev:,.0f} → {today:,.0f}"}
+
+
+def _margin_health_signal(code: str, otc: bool) -> dict:
+    """只支援上市股票——這個資料源沒有上櫃股票的資料(見 margin_data.py 模組docstring)。"""
+    if otc:
+        return {"passed": False, "detail": "上櫃股票不支援融資融券資料"}
+    from margin_data import get_margin_trading
+
+    return _margin_health_from_series(get_margin_trading(code, lookback_days=MARGIN_LOOKBACK_DAYS))
+
+
+def _revenue_momentum_from_value(revenue: dict | None) -> dict:
+    """核心判斷邏輯,吃「已經算好的 fundamentals.get_monthly_revenue() 結果」——單股查詢跟批次掃描共用。"""
+    if revenue is None or revenue.get("yoy_pct") is None:
+        return {"passed": False, "detail": "資料不足"}
+    passed = revenue["yoy_pct"] > REVENUE_YOY_THRESHOLD
+    period = revenue["period"]
+    period_label = f"{int(period[:3]) + 1911}/{period[3:]}" if len(period) == 5 else period
+    return {"passed": passed, "detail": f"{period_label}月營收年增率:{revenue['yoy_pct']:+.1f}%"}
+
+
+def _revenue_momentum_signal(code: str, otc: bool) -> dict:
+    """最新一個月的營收年增率是否為正——中長期基本面動能,跟其他幾個技術/籌碼面條件是互補角度。"""
+    from fundamentals import get_monthly_revenue
+
+    return _revenue_momentum_from_value(get_monthly_revenue(code, otc=otc))
+
+
+def _assemble_light_conditions(
+    ma_result: dict, institutional_result: dict, warrant_result: dict, volume_result: dict,
+    rs_result: dict, margin_result: dict, revenue_result: dict,
+) -> dict:
+    """把7個子結果組成 evaluate_light_signals()/scan_light_signals() 共用的回傳格式。"""
     conditions = {
         "ma_breakout": {"label": "股價剛站上6/40/56EMA", **ma_result},
         "institutional_turn": {"label": "法人剛連續轉買超", **institutional_result},
         "warrant_strong": {"label": "認購權證收紅大額>4筆", **warrant_result},
         "volume_surge": {"label": "成交量增3日均量以上", **volume_result},
         "rs_above_zero": {"label": "RS強於大盤(0軸之上)", **rs_result},
+        "margin_health": {"label": "融資餘額減少(籌碼轉健康)", **margin_result},
+        "revenue_momentum": {"label": "月營收年增率為正", **revenue_result},
     }
     passed_count = sum(1 for c in conditions.values() if c["passed"])
     return {"conditions": conditions, "passed_count": passed_count, "total": len(conditions)}
 
 
 def evaluate_light_signals(code: str, price_df: pd.DataFrame, otc: bool = False) -> dict:
-    """使用者自訂的「條件達成燈號」——5個獨立條件,各自顯示達成與否,不做 AND 判斷。
+    """使用者自訂的「條件達成燈號」——7個獨立條件,各自顯示達成與否,不做 AND 判斷。
 
     跟 `evaluate_long_signal()` 的差異:那個函式算出單一 `long_signal` 布林值(全部條件
-    同時成立才算做多訊號);這個函式只回報「5個裡面達成幾個」,進場判斷交給使用者自己看,
-    不強制規定「全部達成才算數」。
+    同時成立才算做多訊號);這個函式只回報「7個裡面達成幾個」,進場判斷交給使用者自己看,
+    不強制規定「全部達成才算數」。原本是5個技術/籌碼面條件,2026-09-16 加了「融資餘額減少」
+    (籌碼面,跟三大法人是互補角度)跟「月營收年增率為正」(第一個基本面條件)兩個。
 
     price_df:呼叫端已經算好技術指標的價格資料(含 EMA6/EMA40/EMA56/Volume),直接複用
     `app.py` 技術分析分頁的那份,不在這裡重抓——跟 `evaluate_long_signal()` 自己抓資料不同。
@@ -278,6 +327,8 @@ def evaluate_light_signals(code: str, price_df: pd.DataFrame, otc: bool = False)
         _warrant_strong_signal(code),
         _volume_surge_signal(price_df),
         _rs_above_zero_signal(code, otc),
+        _margin_health_signal(code, otc),
+        _revenue_momentum_signal(code, otc),
     )
 
 
@@ -296,6 +347,7 @@ def scan_light_signals(codes, otc_map: dict | None = None, sleep: float = 0.3, p
     from relative_strength import compute_rs_vs_benchmark, fetch_benchmark_history
     from fetch_data import get_history
     from indicators import add_indicators
+    from margin_data import get_margin_trading_multi
 
     codes = list(dict.fromkeys(codes))
     otc_map = otc_map or {}
@@ -307,6 +359,10 @@ def scan_light_signals(codes, otc_map: dict | None = None, sleep: float = 0.3, p
     institutional_multi = get_institutional_flow_multi(codes, institutional_start, end_date, sleep=sleep)
     warrant_multi = get_warrant_large_trade_counts_multi(codes, warrant_start, end_date, WARRANT_SINGLE_TRADE_THRESHOLD, sleep=sleep)
     benchmark_hist = fetch_benchmark_history()
+    # 融資融券這個資料源沒有官方歷史API,只能拿「今天」一筆快照(見 margin_data.py),
+    # 只對上市股票抓——跟三大法人資料同樣不支援上櫃。
+    listed_codes = [c for c in codes if not otc_map.get(c, False)]
+    margin_multi = get_margin_trading_multi(listed_codes) if listed_codes else {}
 
     results = []
     for i, code in enumerate(codes):
@@ -331,12 +387,20 @@ def scan_light_signals(codes, otc_map: dict | None = None, sleep: float = 0.3, p
         volume_result = _volume_surge_signal(price_df) if not price_df.empty else {"passed": False, "detail": "資料不足"}
         rs_result = compute_rs_vs_benchmark(code, otc=otc, benchmark_hist=benchmark_hist) if not price_df.empty else None
 
+        if otc:
+            margin_result = {"passed": False, "detail": "上櫃股票不支援融資融券資料"}
+        else:
+            margin_result = _margin_health_from_series(margin_multi.get(code))
+        revenue_result = _revenue_momentum_signal(code, otc)
+
         light = _assemble_light_conditions(
             ma_result,
             institutional_result,
             _warrant_strong_from_count(warrant_count),
             volume_result,
             _rs_above_zero_from_value(rs_result),
+            margin_result,
+            revenue_result,
         )
         light["code"] = code
         results.append(light)

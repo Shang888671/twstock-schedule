@@ -11,6 +11,7 @@ import yfinance as yf
 import streamlit as st
 import streamlit.components.v1 as components
 
+import calendar_events
 import intraday
 from fetch_data import get_quote, get_history, to_yf_symbol, get_chinese_name, get_tpex_otc_index_quote
 from indicators import add_indicators
@@ -677,6 +678,30 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+# --- 特殊時間點/重大訊息提醒(只有「個股」模式,不是多空訊號,只有「有事」時才顯示) ---
+# 除權息、期貨結算日、重大訊息公告都沒有方向性(不是利多也不是利空的判斷),所以不放進
+# 🚦條件達成燈號計分卡,只在這裡用提示訊息顯示——平常沒有接近的事件時完全不顯示,不佔版面。
+if query_mode == "個股":
+    ex_div = calendar_events.get_upcoming_ex_dividend(code, otc)
+    if ex_div:
+        st.info(
+            f"📅 {ex_div['date']} 除權息(每股{ex_div['cash_dividend']:.2f}元),"
+            f"還有{ex_div['trading_days_until']}個交易日,注意價格會有除權息缺口。"
+        )
+    settlement = calendar_events.get_futures_settlement_info()
+    if settlement["is_near"]:
+        st.info(
+            f"📅 {settlement['settlement_date']} 是期貨/選擇權結算日,還有{settlement['days_until']}天,"
+            "結算前後價格可能有非基本面的技術性波動。"
+        )
+    announcements = calendar_events.get_recent_material_announcements(code, otc)
+    if announcements:
+        latest = announcements[0]
+        st.info(
+            f"📰 近3天有{len(announcements)}則重大訊息公告,最新:「{latest['subject']}」({latest['date']})"
+            "——公告內容本身沒有方向性,建議自己看內容判斷。"
+        )
+
 try:
     df = load_history_with_indicators(code, period, otc)
 except Exception as e:
@@ -883,10 +908,12 @@ with tab_ai:
     st.markdown('<div class="section-card">', unsafe_allow_html=True)
     st.markdown('<div class="section-title">🚦 條件達成燈號(自訂規則)</div>', unsafe_allow_html=True)
     st.caption(
-        "5 個獨立條件各自顯示目前有沒有達成,不要求同時成立(跟上面的做多訊號不同,這裡只是計分卡,"
+        "7 個獨立條件各自顯示目前有沒有達成,不要求同時成立(跟上面的做多訊號不同,這裡只是計分卡,"
         "進場判斷交給你自己看):① 股價剛同時站上6/40/56EMA(今天剛突破,不是已經站上一段時間)"
         "② 三大法人近2天剛轉為買超(前一天還是賣超)③ 認購權證近1天單筆≥50萬且當天收紅的檔數超過4筆"
-        "④ 成交量超過前3日均量 ⑤ RS(近20天報酬率-加權指數同期報酬率)在0軸之上。"
+        "④ 成交量超過前3日均量 ⑤ RS(近20天報酬率-加權指數同期報酬率)在0軸之上"
+        "⑥ 融資餘額比前一筆減少(籌碼轉健康,只支援上市,且這個資料源沒有歷史API只能逐日累積,"
+        "剛開始查一檔新股票會顯示資料不足)⑦ 最新一個月營收年增率為正。"
     )
 
     light_scope = st.radio(
@@ -894,7 +921,7 @@ with tab_ai:
     )
     light_min_count = None
     if light_scope == "檢查整個 .dsl 股票池(有個股期貨的標的)":
-        light_min_count = st.slider("只列出至少達成幾項條件的股票", min_value=1, max_value=5, value=3)
+        light_min_count = st.slider("只列出至少達成幾項條件的股票", min_value=1, max_value=7, value=3)
         st.caption(
             "股價/RS 逐檔股價要逐股抓,法人/權證資料則是整個股票池一次批次抓取(不是每檔股票各自打一次),"
             "所以不管股票池多大,主要瓶頸是股票數量本身(逐檔抓股價這段),第一次跑會比較久。"
@@ -940,9 +967,9 @@ with tab_ai:
                     from signals import evaluate_light_signals
 
                     light_result = evaluate_light_signals(code, df, otc=otc)
-                    st.success(f"5 個條件中達成 {light_result['passed_count']}/{light_result['total']} 個")
+                    st.success(f"{light_result['total']} 個條件中達成 {light_result['passed_count']}/{light_result['total']} 個")
 
-                    light_cols = st.columns(5)
+                    light_cols = st.columns(light_result["total"])
                     for lcol, c in zip(light_cols, light_result["conditions"].values()):
                         lcol.metric(c["label"], "🟢 達成" if c["passed"] else "🔴 未達成")
                         lcol.caption(c["detail"])
