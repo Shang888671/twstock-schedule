@@ -4,12 +4,14 @@
 """
 
 import json
+import time as time_module
 
 import pandas as pd
 import yfinance as yf
 import streamlit as st
 import streamlit.components.v1 as components
 
+import intraday
 from fetch_data import get_quote, get_history, to_yf_symbol, get_chinese_name, get_tpex_otc_index_quote
 from indicators import add_indicators
 from volume_profile import find_nearest_supports, find_nearest_resistances
@@ -182,6 +184,65 @@ def load_history_with_indicators(code, period, otc):
 @st.cache_data(ttl=300)
 def load_us_overnight_signal():
     return get_us_overnight_signal()
+
+
+def _build_score_gauge_html(score, score_max, strong_threshold) -> str:
+    """一條 -score_max ~ +score_max 的橫條,從中間(0分)往漲/跌那一側填色,一眼看出這次
+    分數離「打平」還是「滿分」有多遠,比只看數字直覺。刻度是兩端(滿分)、中間(0分)、加上
+    強弱門檻(strong_threshold)共5個,直接對應「強多/偏多/中性/偏空/強空」五級的分界。
+    美股夜盤連動指標(±SCORE_MAX、門檻 SCORE_STRONG_THRESHOLD)跟盤中強弱(±100、門檻50)
+    共用這個 helper,分數範圍不同所以參數化。score 是 None(資料不足)時回傳空字串。
+    """
+    if score is None:
+        return ""
+    pct = max(0.0, min(100.0, (score + score_max) / (2 * score_max) * 100))
+    if score > 0:
+        fill_left, fill_width, fill_color = 50, pct - 50, "var(--tw-up)"
+    elif score < 0:
+        fill_left, fill_width, fill_color = pct, 50 - pct, "var(--tw-down)"
+    else:
+        fill_left, fill_width, fill_color = 50, 0, "#9ca3af"
+
+    def _tick_pct(t):
+        return (t + score_max) / (2 * score_max) * 100
+
+    def _tick_label(t):
+        if t == -score_max:
+            return f"強空{t:+.0f}"
+        if t == score_max:
+            return f"強多{t:+.0f}"
+        return "0" if t == 0 else f"{t:+.0f}"
+
+    def _tick_transform(t):
+        if t == -score_max:
+            return "0%"
+        if t == score_max:
+            return "-100%"
+        return "-50%"
+
+    tick_scores = [-score_max, -strong_threshold, 0, strong_threshold, score_max]
+    # 刻意寫成單行、不縮排——Streamlit 的 markdown 引擎看到多行 HTML 裡有 4 個空白以上的
+    # 縮排會誤判成「縮排程式碼區塊」,導致後面接著的 stat-row HTML 整段變成純文字顯示,
+    # 不會被當成 HTML 渲染(先前這裡用多行縮排字串時就踩到這個坑,改單行後就正常了)。
+    ticks_html = "".join(
+        f'<div style="position:absolute; left:{_tick_pct(t)}%; top:-3px; bottom:-3px; width:1px; '
+        f'background:rgba(255,255,255,{0.35 if t == 0 else 0.18});"></div>'
+        for t in tick_scores
+    )
+    labels_html = "".join(
+        f'<span style="position:absolute; left:{_tick_pct(t)}%; transform:translateX({_tick_transform(t)}); '
+        f'white-space:nowrap;">{_tick_label(t)}</span>'
+        for t in tick_scores
+    )
+    return (
+        '<div style="margin-top:0.8rem; max-width:360px;">'
+        '<div style="position:relative; height:8px; background:rgba(255,255,255,0.08); border-radius:4px;">'
+        f"{ticks_html}"
+        f'<div style="position:absolute; left:{fill_left}%; width:{fill_width}%; top:0; bottom:0; background:{fill_color}; border-radius:4px;"></div>'
+        "</div>"
+        f'<div style="position:relative; height:1rem; font-size:0.68rem; color:#6b7280; margin-top:3px;">{labels_html}</div>'
+        "</div>"
+    )
 
 
 # --- K線圖:TradingView 官方開源的 lightweight-charts 引擎(取代原本的 Plotly 版本) ---
@@ -460,60 +521,9 @@ if us_signal:
     else:
         us_badge_class, us_badge_text = "badge-flat", "資料不足"
 
-    # 淨分視覺化:一條 -SCORE_MAX ~ +SCORE_MAX 的橫條,從中間(0分)往漲/跌那一側填色,
-    # 一眼看出這次淨分離「打平」還是「滿分(4個指標都強同向)」有多遠,比只看數字直覺。
+    # 淨分視覺化:見 _build_score_gauge_html()(跟盤中強弱指標共用同一個 helper)。
     SCORE_MAX = max(STRENGTH_WEIGHT.values()) * len(US_MARKET_SYMBOLS)
-    score_gauge_html = ""
-    if score is not None:
-        pct = max(0.0, min(100.0, (score + SCORE_MAX) / (2 * SCORE_MAX) * 100))
-        if score > 0:
-            fill_left, fill_width, fill_color = 50, pct - 50, "var(--tw-up)"
-        elif score < 0:
-            fill_left, fill_width, fill_color = pct, 50 - pct, "var(--tw-down)"
-        else:
-            fill_left, fill_width, fill_color = 50, 0, "#9ca3af"
-        # 刻度:兩端(滿分)、中間(0分)、加上強弱門檻(SCORE_STRONG_THRESHOLD)共5個,
-        # 門檻刻度直接對應「強多/偏多/中性/偏空/強空」五級的分界,不是隨便等分的刻度。
-        def _tick_pct(t):
-            return (t + SCORE_MAX) / (2 * SCORE_MAX) * 100
-
-        def _tick_label(t):
-            if t == -SCORE_MAX:
-                return f"強空{t:+d}"
-            if t == SCORE_MAX:
-                return f"強多{t:+d}"
-            return "0" if t == 0 else f"{t:+d}"
-
-        def _tick_transform(t):
-            if t == -SCORE_MAX:
-                return "0%"
-            if t == SCORE_MAX:
-                return "-100%"
-            return "-50%"
-
-        tick_scores = [-SCORE_MAX, -SCORE_STRONG_THRESHOLD, 0, SCORE_STRONG_THRESHOLD, SCORE_MAX]
-        # 刻意寫成單行、不縮排——Streamlit 的 markdown 引擎看到多行 HTML 裡有 4 個空白以上的
-        # 縮排會誤判成「縮排程式碼區塊」,導致後面接著的 stat-row HTML 整段變成純文字顯示,
-        # 不會被當成 HTML 渲染(先前這裡用多行縮排字串時就踩到這個坑,改單行後就正常了)。
-        ticks_html = "".join(
-            f'<div style="position:absolute; left:{_tick_pct(t)}%; top:-3px; bottom:-3px; width:1px; '
-            f'background:rgba(255,255,255,{0.35 if t == 0 else 0.18});"></div>'
-            for t in tick_scores
-        )
-        labels_html = "".join(
-            f'<span style="position:absolute; left:{_tick_pct(t)}%; transform:translateX({_tick_transform(t)}); '
-            f'white-space:nowrap;">{_tick_label(t)}</span>'
-            for t in tick_scores
-        )
-        score_gauge_html = (
-            '<div style="margin-top:0.8rem; max-width:360px;">'
-            '<div style="position:relative; height:8px; background:rgba(255,255,255,0.08); border-radius:4px;">'
-            f"{ticks_html}"
-            f'<div style="position:absolute; left:{fill_left}%; width:{fill_width}%; top:0; bottom:0; background:{fill_color}; border-radius:4px;"></div>'
-            "</div>"
-            f'<div style="position:relative; height:1rem; font-size:0.68rem; color:#6b7280; margin-top:3px;">{labels_html}</div>'
-            "</div>"
-        )
+    score_gauge_html = _build_score_gauge_html(score, SCORE_MAX, SCORE_STRONG_THRESHOLD)
 
     US_STRENGTH_COLOR = {"強": "var(--accent-gold)", "普通": "#8b93a7", "弱": "#6b7280"}
 
@@ -672,6 +682,83 @@ try:
 except Exception as e:
     st.error(f"抓取歷史資料失敗:{e}")
     st.stop()
+
+# --- 盤中即時強弱(只有「個股」模式,加權指數/櫃買指數沒有 TWSE MIS 即時報價可用) ---
+# 用 TWSE 官方 mis.twse.com.tw 即時報價(見 intraday.py 說明,yfinance 對台股不夠即時),
+# 交易時間內用 st.fragment(run_every=10) 每10秒自動刷新這個區塊,不會拖累整頁重繪
+# (K線圖等其他區塊不會跟著每10秒重畫)。非交易時間不自動輪詢,只提供手動刷新按鈕。
+if query_mode == "個股":
+    intraday_history_key = f"intraday_price_history_{code}_{otc}"
+    st.session_state.setdefault(intraday_history_key, [])
+    intraday_market_open = intraday.is_market_open_now()
+
+    @st.fragment(run_every=10 if intraday_market_open else None)
+    def _render_intraday_strength_section():
+        st.markdown('<div class="section-card">', unsafe_allow_html=True)
+        st.markdown('<div class="section-title">⚡ 盤中即時強弱</div>', unsafe_allow_html=True)
+
+        iq = intraday.get_intraday_quote(code, otc)
+        if iq is None or iq["last_price"] is None:
+            st.info("盤中即時資料暫時無法取得(可能尚未開盤或代號查無資料)。")
+            st.markdown("</div>", unsafe_allow_html=True)
+            return
+
+        hist = st.session_state[intraday_history_key]
+        hist.append((time_module.time(), iq["last_price"]))
+        st.session_state[intraday_history_key] = hist[-30:]
+
+        avg_vol = float(df["Volume"].tail(5).mean()) if not df.empty else None
+        result = intraday.compute_intraday_strength(iq, avg_vol, st.session_state[intraday_history_key])
+        score, score_label = result["score"], result["score_label"]
+
+        if score_label in ("強多", "偏多"):
+            badge_cls, badge_text = "badge-up", f"▲ {score_label}(分數{score:+.1f})"
+        elif score_label in ("強空", "偏空"):
+            badge_cls, badge_text = "badge-down", f"▼ {score_label}(分數{score:+.1f})"
+        elif score_label == "中性":
+            badge_cls, badge_text = "badge-flat", f"▬ 中性(分數{score:+.1f})"
+        else:
+            badge_cls, badge_text = "badge-flat", "資料不足"
+
+        gauge_html = _build_score_gauge_html(score, 100, intraday.SCORE_STRONG_THRESHOLD)
+        stat_items = "".join(
+            f'<div class="stat-item"><div class="label">{intraday.SIGNAL_LABELS[key]}</div>'
+            f'<div class="value" style="font-size:0.8rem;">{result["signals"][key]["detail"]}</div></div>'
+            for key in intraday.SIGNAL_WEIGHTS
+        )
+
+        st.markdown(
+            f"""
+            <div class="quote-card">
+                <div class="quote-symbol">{iq['symbol']} · {iq.get('name') or name}</div>
+                <div class="quote-price-row">
+                    <div class="quote-price">{iq['last_price']:,.2f}</div>
+                    <div class="quote-badge {badge_cls}">{badge_text}</div>
+                </div>
+                {gauge_html}
+                <div class="stat-row">
+                    {stat_items}
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        if intraday_market_open:
+            st.caption(f"每10秒自動更新・資料時間 {iq.get('date', '')} {iq.get('time', '')}(TWSE官方即時報價,非精確逐筆)")
+        else:
+            st.caption(f"目前非交易時段(09:00-13:30),顯示最後資料・資料時間 {iq.get('date', '')} {iq.get('time', '')}")
+            st.button("🔄 立即刷新", key=f"intraday_manual_refresh_{code}_{otc}")
+
+        st.caption(
+            "5個訊號(當日區間位置/開盤動能/量能比/委買委賣力道/短線動能)加權平均成分數,"
+            "權重跟正規化幅度都是主觀訂的,不是統計驗證過的數字。委買委賣力道是五檔掛單量的"
+            "代理指標,不是逐筆成交的真實內外盤比;短線動能只從打開這檔股票開始累積樣本,"
+            "不是從開盤算起。純觀察參考,不是下單訊號。"
+        )
+        st.markdown("</div>", unsafe_allow_html=True)
+
+    _render_intraday_strength_section()
 
 IS_INDEX = code in INDEX_DISPLAY_NAMES  # 這裡只會是「個股」或「加權指數」,櫃買指數在上面已經 st.stop()
 
