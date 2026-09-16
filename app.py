@@ -100,8 +100,19 @@ with st.sidebar:
     st.markdown("### 📈 台股查詢模型")
     st.caption("即時報價・技術指標・做多訊號")
     st.divider()
-    code = st.text_input("股票代號", value="2330", help="輸入純數字代號,例如 2330")
-    otc = st.checkbox("上櫃股票", value=False, help="預設為上市股票")
+    query_mode = st.radio("查詢標的", ["個股", "加權指數", "櫃買指數"], horizontal=True)
+    if query_mode == "個股":
+        code = st.text_input("股票代號", value="2330", help="輸入純數字代號,例如 2330")
+        otc = st.checkbox("上櫃股票", value=False, help="預設為上市股票")
+    else:
+        # 指數代號直接寫死,不透過股票代號輸入框——加權/櫃買指數不是個股,沒有上市/上櫃之分,
+        # yfinance 用「^」開頭的代號代表指數(fetch_data.to_yf_symbol 會原樣放行不加 .TW/.TWO)。
+        code = "^TWII" if query_mode == "加權指數" else "^TWOII"
+        otc = False
+        st.caption(
+            "櫃買指數(^TWOII)yfinance只有即時報價,沒有歷史K線資料,技術分析/做多訊號/分點掃描"
+            "功能無法使用。" if query_mode == "櫃買指數" else "加權指數(^TWII)功能跟查個股一樣完整。"
+        )
     period = st.selectbox("歷史資料區間", ["3mo", "6mo", "1y", "2y", "5y"], index=2)
     st.divider()
 
@@ -407,7 +418,10 @@ except Exception as e:
     st.error(f"抓取報價失敗:{e}")
     st.stop()
 
-name = load_name(code, otc)
+# 指數不是個股,查不到 TWSE ISIN 中文簡稱,yfinance 的 longName 也是亂碼代號(例如
+# "^TWOII,113497,928500"),直接用固定的顯示名稱,不走 load_name() 那套查詢股票的邏輯。
+INDEX_DISPLAY_NAMES = {"^TWII": "加權指數(台股大盤)", "^TWOII": "櫃買指數(TPEx)"}
+name = INDEX_DISPLAY_NAMES[code] if code in INDEX_DISPLAY_NAMES else load_name(code, otc)
 
 st.markdown(
     f"""<div class="app-header">
@@ -573,6 +587,27 @@ else:
     st.warning("美股夜盤資料抓取失敗,暫時無法顯示連動指標。")
 
 # --- 報價卡片 ---
+# 櫃買指數(^TWOII)yfinance只給得出即時報價(previous_close/day_high/day_low/volume全是
+# None),也完全沒有歷史K線資料——用簡化報價卡顯示,技術分析/做多訊號/分點掃描都需要歷史
+# 資料才能運作,直接停在這裡,不往下走個股/加權指數共用的那條完整流程。
+if code == "^TWOII":
+    st.markdown(
+        f"""
+        <div class="quote-card">
+            <div class="quote-symbol">{quote['symbol']} · {name}</div>
+            <div class="quote-price-row">
+                <div class="quote-price">{quote['last_price']:,.2f}</div>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.info(
+        "yfinance 對櫃買指數只提供即時報價,沒有歷史K線資料——技術分析、做多訊號、分點掃描"
+        "這幾個功能都需要歷史資料才能運作,暫不支援。"
+    )
+    st.stop()
+
 last_price = quote["last_price"]
 prev_close = quote["previous_close"]
 change = last_price - prev_close if (last_price is not None and prev_close) else None
@@ -613,10 +648,13 @@ except Exception as e:
     st.error(f"抓取歷史資料失敗:{e}")
     st.stop()
 
-tab_chart, tab_ai, tab_scan = st.tabs(["📊 技術分析", "🎯 做多訊號", "🔎 分點掃描"])
+IS_INDEX = code in INDEX_DISPLAY_NAMES  # 這裡只會是「個股」或「加權指數」,櫃買指數在上面已經 st.stop()
 
-# --- 技術分析 ---
-with tab_chart:
+
+def _render_chart_section():
+    """K線圖+技術指標,個股跟加權指數共用——加權指數沒有三大法人/權證/分點籌碼資料,
+    「做多訊號」「分點掃描」這兩個分頁對指數沒有意義,所以只有這個分頁在指數模式下也會顯示。
+    """
     st.markdown('<div class="section-card">', unsafe_allow_html=True)
     st.markdown('<div class="section-title">價格走勢與技術指標</div>', unsafe_allow_html=True)
 
@@ -639,6 +677,18 @@ with tab_chart:
     else:
         st.caption("近3個月籌碼資料不足,找不到明顯阻力。")
     st.markdown("</div>", unsafe_allow_html=True)
+
+
+if IS_INDEX:
+    # 指數沒有三大法人/權證/分點籌碼資料,「做多訊號」「分點掃描」對指數沒有意義,
+    # 不用 st.tabs() 包單一分頁,技術分析內容直接照樣渲染。
+    _render_chart_section()
+    st.stop()
+
+tab_chart, tab_ai, tab_scan = st.tabs(["📊 技術分析", "🎯 做多訊號", "🔎 分點掃描"])
+
+with tab_chart:
+    _render_chart_section()
 
 # --- 做多訊號 ---
 with tab_ai:

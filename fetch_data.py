@@ -25,8 +25,12 @@ HEADERS = {"User-Agent": "Mozilla/5.0"}
 
 
 def to_yf_symbol(code: str, otc: bool = False) -> str:
-    """把純數字股票代號轉成 yfinance 用的代號。"""
-    if code.endswith(".TW") or code.endswith(".TWO"):
+    """把純數字股票代號轉成 yfinance 用的代號。
+
+    「^」開頭的是指數代號(例如加權指數 "^TWII"、櫃買指數 "^TWOII"),原樣直接回傳,
+    不套用 .TW/.TWO 個股後綴規則——指數不是個股,沒有上市/上櫃之分。
+    """
+    if code.startswith("^") or code.endswith(".TW") or code.endswith(".TWO"):
         return code
     return f"{code}.TWO" if otc else f"{code}.TW"
 
