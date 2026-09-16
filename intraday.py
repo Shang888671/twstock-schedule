@@ -207,7 +207,9 @@ def _signal_bid_ask_pressure(quote: dict) -> dict:
     if bid_total + ask_total <= 0:
         return {"available": False, "value": None, "detail": "五檔掛單資料不足"}
     value = _clip((bid_total - ask_total) / (bid_total + ask_total))
-    return {"available": True, "value": value, "detail": f"委買{bid_total:,.0f} / 委賣{ask_total:,.0f}"}
+    # TWSE MIS 五檔掛單量(g/f 欄位)本來就是「張」為單位(跟累積成交量 v 欄位不同,v 才需要
+    # 額外乘1000換算),這裡直接標單位,不用再除1000。
+    return {"available": True, "value": value, "detail": f"委買{bid_total:,.0f}張 / 委賣{ask_total:,.0f}張"}
 
 
 def _signal_price_slope(price_history: list[tuple[float, float]]) -> dict:

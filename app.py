@@ -656,7 +656,7 @@ else:
     badge_class, arrow = "badge-down", "▼"
 
 change_str = f"{arrow} {abs(change):.2f} ({abs(change_pct):.2f}%)" if change is not None else "—"
-volume_str = f"{quote['volume']:,}" if quote["volume"] else "—"
+volume_str = f"{quote['volume'] / 1000:,.0f} 張" if quote["volume"] else "—"  # yfinance 回傳的是股,換算成張(1張=1000股)跟台股慣例一致
 
 st.markdown(
     f"""
