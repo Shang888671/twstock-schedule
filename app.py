@@ -13,6 +13,7 @@ import streamlit.components.v1 as components
 
 import calendar_events
 import intraday
+import night_session
 from fetch_data import get_quote, get_history, to_yf_symbol, get_chinese_name, get_tpex_otc_index_quote
 from indicators import add_indicators
 from volume_profile import find_nearest_supports, find_nearest_resistances
@@ -185,6 +186,11 @@ def load_history_with_indicators(code, period, otc):
 @st.cache_data(ttl=300)
 def load_us_overnight_signal():
     return get_us_overnight_signal()
+
+
+@st.cache_data(ttl=1800)
+def load_night_session_strength():
+    return night_session.compute_night_session_strength()
 
 
 def _build_score_gauge_html(score, score_max, strong_threshold) -> str:
@@ -607,6 +613,56 @@ if us_signal:
     )
 else:
     st.warning("美股夜盤資料抓取失敗,暫時無法顯示連動指標。")
+
+# --- 台指期(TX)夜盤參與度(獨立於個股查詢,跟股票代號無關) ---
+# 跟上面的美股夜盤連動指標是不同角度:那個看美股對台股的連動方向,這個看台灣資金自己在
+# 夜盤(15:00~次日05:00)的參與熱度——純粹是量能強弱,不判斷多空方向(見 night_session.py)。
+try:
+    night_signal = load_night_session_strength()
+except Exception:
+    night_signal = None
+
+if night_signal:
+    strength = night_signal["strength"]
+    strength_emoji = {"熱絡": "🔥", "普通": "➖", "清淡": "💤"}.get(strength, "❔")
+    strength_text = f"{strength_emoji} {strength}" if strength else "資料不足"
+    ratio_str = f"(量能比 {night_signal['ratio']:.2f}倍)" if night_signal["ratio"] is not None else ""
+
+    chg = night_signal["front_month_change_pct"]
+    if chg is None:
+        chg_badge_class, chg_str = "badge-flat", "—"
+    elif chg > 0:
+        chg_badge_class, chg_str = "badge-up", f"▲ {chg:+.2f}%"
+    elif chg < 0:
+        chg_badge_class, chg_str = "badge-down", f"▼ {chg:+.2f}%"
+    else:
+        chg_badge_class, chg_str = "badge-flat", "▬ 0.00%"
+
+    st.markdown(
+        f"""
+        <div class="quote-card">
+            <div class="quote-symbol">🌆 台指期夜盤參與度</div>
+            <div class="quote-price-row">
+                <div class="quote-badge badge-flat">{strength_text}{ratio_str}</div>
+                <div class="quote-badge {chg_badge_class}">{chg_str}</div>
+            </div>
+            <div class="stat-row">
+                <div class="stat-item"><div class="label">夜盤成交量</div><div class="value">{night_signal['volume']:,} 口</div></div>
+                <div class="stat-item"><div class="label">近20日均量</div><div class="value">{night_signal['avg_volume']:,.0f} 口</div></div>
+                <div class="stat-item"><div class="label">資料日期</div><div class="value">{night_signal['date']}</div></div>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.caption(
+        "台股期貨(TX)15:00~次日05:00盤後交易時段全合約加總成交量,對比近20個交易日均量的"
+        "比值,反映的是台灣資金自己的參與度/信心強度,不是多空方向——量大只代表當晚交易熱絡、"
+        "資金關注度高,不代表偏多或偏空。近月合約當晚漲跌%只是補充參考,不是這個指標的主體。"
+        "純觀察參考,不是下單訊號。"
+    )
+else:
+    st.info("台指期夜盤資料暫時無法取得或還在累積中。")
 
 # --- 報價卡片 ---
 # 櫃買指數(^TWOII)改抓 TPEx 官方 OpenAPI 的當月每日行情(見 get_tpex_otc_index_quote()),
