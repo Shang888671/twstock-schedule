@@ -144,8 +144,8 @@ with st.sidebar:
         code = "^TWII" if query_mode == "加權指數" else "^TWOII"
         otc = False
         st.caption(
-            "櫃買指數(^TWOII)改抓TPEx官方資料(yfinance資料過時),但只有每日收盤行情,"
-            "沒有歷史K線資料,技術分析/做多訊號/分點掃描功能無法使用。"
+            "櫃買指數(^TWOII)改抓TWSE MIS即時報價(真即時,非延遲),但沒有歷史K線資料,"
+            "技術分析/做多訊號/分點掃描功能無法使用。"
             if query_mode == "櫃買指數" else "加權指數(^TWII)功能跟查個股一樣完整。"
         )
     period = st.selectbox("歷史資料區間", ["3mo", "6mo", "1y", "2y", "5y"], index=2)
@@ -518,10 +518,17 @@ if not code:
 
 try:
     if code == "^TWOII":
-        # 櫃買指數不走 yfinance——實測 yfinance 的 ^TWOII 資料嚴重過時(抓到的是2024-10-11的
-        # 舊資料,不是即時的),改用 fetch_data.get_tpex_otc_index_quote() 直接打 TPEx 官方
-        # OpenAPI 拿最新一筆日行情。
-        quote = load_tpex_otc_index_quote()
+        # 櫃買指數原本以為沒有即時報價來源(yfinance的^TWOII嚴重過時,TPEx官方OpenAPI也
+        # 只有每日收盤),後來實測發現 TWSE MIS(intraday.py用的同一支API)其實也有服務
+        # 櫃買指數,代號是"otc_o00.tw"(不是股票代號,是TWSE MIS對這個指數的固定代碼)——
+        # 已用「跟TPEx官方昨收比對」的方式驗證過不是抓錯資料(MIS的前一日收盤y=399.21,
+        # 剛好等於TPEx官方昨天(20260916)的收盤399.21,兩個資料源對得上)。
+        # MIS抓不到時才退回 TPEx 官方每日收盤行情。
+        quote = intraday.get_intraday_quote("o00", otc=True)
+        if quote is None or quote.get("last_price") is None:
+            quote = load_tpex_otc_index_quote()
+        elif quote is not None:
+            quote["symbol"] = "^TWOII"
     elif code == "^TWII":
         quote = load_quote(code, otc)
     else:
@@ -708,9 +715,9 @@ else:
     st.info("台指期夜盤資料暫時無法取得或還在累積中。")
 
 # --- 報價卡片 ---
-# 櫃買指數(^TWOII)改抓 TPEx 官方 OpenAPI 的當月每日行情(見 get_tpex_otc_index_quote()),
-# 是每日更新的收盤資料,不是逐筆即時報價,而且這個端點也沒有任意區間的歷史資料可以拉,
-# 所以只能顯示一張報價卡,技術分析/做多訊號/分點掃描都需要歷史K線資料才能運作,不支援。
+# 櫃買指數(^TWOII)優先用 TWSE MIS 即時報價,MIS 沒有歷史資料可以拉(不管即時報價這邊
+# 抓不抓得到都一樣),所以只能顯示一張報價卡,技術分析/做多訊號/分點掃描都需要歷史K線
+# 資料才能運作,不支援。
 if code == "^TWOII":
     otc_change = quote["last_price"] - quote["previous_close"]
     otc_change_pct = otc_change / quote["previous_close"] * 100
@@ -739,8 +746,11 @@ if code == "^TWOII":
         """,
         unsafe_allow_html=True,
     )
-    st.caption(f"資料日期:{quote['asof'][:4]}-{quote['asof'][4:6]}-{quote['asof'][6:]}(TPEx官方每日收盤行情,非逐筆即時)")
-    st.info("TPEx 這個資料源沒有任意區間的歷史K線資料,技術分析、做多訊號、分點掃描這幾個功能都需要歷史資料才能運作,暫不支援。")
+    if "date" in quote:  # 有 date/time 欄位代表這次是 TWSE MIS 即時報價,不是 TPEx 每日收盤
+        st.caption(f"資料時間 {quote.get('date', '')} {quote.get('time', '')}(TWSE官方即時報價,非精確逐筆)")
+    else:
+        st.caption(f"⚠️ TWSE即時報價暫時無法取得,顯示的是TPEx官方每日收盤行情(資料日期:{quote['asof'][:4]}-{quote['asof'][4:6]}-{quote['asof'][6:]})。")
+    st.info("這個指數沒有任意區間的歷史K線資料可用,技術分析、做多訊號、分點掃描這幾個功能都需要歷史資料才能運作,暫不支援。")
     st.stop()
 
 last_price = quote["last_price"]
