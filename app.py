@@ -14,6 +14,7 @@ import streamlit.components.v1 as components
 import calendar_events
 import intraday
 import night_session
+import reversal_alert
 from fetch_data import get_quote, get_history, to_yf_symbol, get_chinese_name, get_tpex_otc_index_quote
 from indicators import add_indicators
 from volume_profile import find_nearest_supports, find_nearest_resistances
@@ -282,6 +283,79 @@ def _build_score_gauge_html(score, score_max, strong_threshold) -> str:
     )
 
 
+def _render_reversal_banner(signal: dict) -> None:
+    """盤中急殺/反轉警示(見 reversal_alert.py)的畫面呈現,個股跟指數(加權/櫃買)共用。
+    永遠顯示(不是只在有警示時才出現),讓使用者能確認「這個監控目前是活的」,而不是
+    誤以為畫面一片空白代表沒在運作。"""
+    severity = signal["severity"]
+    if severity == "急殺":
+        st.error(f"🔻 急殺警示:{signal['detail']}")
+    elif severity == "拉回":
+        st.warning(f"⚠️ 拉回:{signal['detail']}")
+    else:
+        st.success(f"✅ 正常:{signal['detail']}")
+
+
+def _make_index_reversal_fragment(mis_code: str, mis_otc: bool, display_symbol: str, market_open: bool):
+    """加權指數/櫃買指數共用的「⚠️盤中急殺警示」區塊,包成工廠函式(不是直接定義一次
+    fragment)是因為呼叫的位置不一樣——^TWII 走一般流程(後面才有K線/df可以用),^TWOII
+    在報價卡片那段就直接 st.stop()(這個指數沒有歷史資料,後面的區塊完全用不到),兩邊
+    都要在各自的 st.stop() 之前呼叫這個,不能共用同一個「寫死在某個位置」的 fragment。
+
+    只做急殺警示,不做像個股那樣的5訊號綜合評分——指數沒有近5日均量/委買委賣力道以外的
+    訊號可以組成那一套評分邏輯,硬套意義不大。
+    """
+    history_key = f"reversal_price_history_{mis_code}_{mis_otc}"
+    st.session_state.setdefault(history_key, [])
+
+    @st.fragment(run_every=10 if market_open else None)
+    def _render():
+        st.markdown('<div class="section-card">', unsafe_allow_html=True)
+        st.markdown('<div class="section-title">⚠️ 盤中急殺警示</div>', unsafe_allow_html=True)
+
+        iq = intraday.get_intraday_quote(mis_code, mis_otc)
+        if iq is None or iq["last_price"] is None:
+            st.info("盤中即時資料暫時無法取得(可能尚未開盤)。")
+            st.markdown("</div>", unsafe_allow_html=True)
+            return
+
+        hist = st.session_state[history_key]
+        hist.append((time_module.time(), iq["last_price"]))
+        st.session_state[history_key] = hist[-30:]
+
+        signal = reversal_alert.compute_reversal_signal(
+            iq.get("day_high"), iq["last_price"], st.session_state[history_key]
+        )
+
+        st.markdown(
+            f"""
+            <div class="quote-card">
+                <div class="quote-symbol">{display_symbol} · {name}</div>
+                <div class="quote-price-row">
+                    <div class="quote-price">{iq['last_price']:,.2f}</div>
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        _render_reversal_banner(signal)
+
+        if market_open:
+            st.caption(f"每10秒自動更新・資料時間 {iq.get('date', '')} {iq.get('time', '')}(TWSE官方即時報價,非精確逐筆)")
+        else:
+            st.caption(f"目前非交易時段(09:00-13:30),顯示最後資料・資料時間 {iq.get('date', '')} {iq.get('time', '')}")
+            st.button("🔄 立即刷新", key=f"index_reversal_manual_refresh_{mis_code}")
+
+        st.caption(
+            "拉回幅度=距今日高點回落%,近5分鐘變動幅度抓的是「速度」,任一超過門檻就升級警示。"
+            "門檻(1%/2%/近5分鐘0.8%)是主觀訂的,不是統計驗證過的數字——這一步先驗證邏輯"
+            "抓得準不準,還沒有背景推播,離開頁面不會主動通知你。純觀察參考,不是下單訊號。"
+        )
+        st.markdown("</div>", unsafe_allow_html=True)
+
+    return _render
+
+
 # --- K線圖:TradingView 官方開源的 lightweight-charts 引擎(取代原本的 Plotly 版本) ---
 # 資料還是我們自己算好的 indicators.add_indicators() 結果,只是換了一個真正的 TradingView
 # 圖表渲染引擎(十字游標、拖曳縮放、K棒樣式都是原生 TradingView 手感),不是嵌入 TradingView
@@ -516,30 +590,34 @@ if not code:
     st.info("請在左側輸入股票代號")
     st.stop()
 
+# 個股/加權指數/櫃買指數在 TWSE MIS 的代號規則——加權指數固定代號"t00"、櫃買指數固定
+# 代號"o00"(都已用跟yfinance/TPEx官方數字對得上驗證過不是抓錯),個股就是股票代號本身。
+# 這組(mis_code, mis_otc)後面「⚠️盤中急殺警示」區塊也會用到,所以獨立算出來、不要塞在
+# try/except裡面重算一次。
+if code == "^TWOII":
+    mis_code, mis_otc, display_symbol = "o00", True, "^TWOII"
+elif code == "^TWII":
+    mis_code, mis_otc, display_symbol = "t00", False, "^TWII"
+else:
+    mis_code, mis_otc, display_symbol = code, otc, to_yf_symbol(code, otc)
+
 try:
     if code == "^TWOII":
         # 櫃買指數原本以為沒有即時報價來源(yfinance的^TWOII嚴重過時,TPEx官方OpenAPI也
         # 只有每日收盤),後來實測發現 TWSE MIS(intraday.py用的同一支API)其實也有服務
-        # 櫃買指數,代號是"otc_o00.tw"(不是股票代號,是TWSE MIS對這個指數的固定代碼)——
-        # 已用「跟TPEx官方昨收比對」的方式驗證過不是抓錯資料(MIS的前一日收盤y=399.21,
-        # 剛好等於TPEx官方昨天(20260916)的收盤399.21,兩個資料源對得上)。
+        # 櫃買指數——已用「跟TPEx官方昨收比對」的方式驗證過不是抓錯資料(MIS的前一日收盤
+        # y=399.21,剛好等於TPEx官方昨天(20260916)的收盤399.21,兩個資料源對得上)。
         # MIS抓不到時才退回 TPEx 官方每日收盤行情。
-        quote = intraday.get_intraday_quote("o00", otc=True)
+        quote = intraday.get_intraday_quote(mis_code, mis_otc)
         if quote is None or quote.get("last_price") is None:
             quote = load_tpex_otc_index_quote()
         elif quote is not None:
-            quote["symbol"] = "^TWOII"
+            quote["symbol"] = display_symbol
     else:
         # 個股跟加權指數的主報價卡都改抓 TWSE 官方 mis.twse.com.tw 即時報價(intraday.py),
         # 不再用 yfinance——yfinance 對台股有官方15~20分鐘延遲,MIS 才是真正即時,這樣個股
         # 主報價卡才會跟下面「⚡盤中即時強弱」卡片顯示同一個價格,不會兩張卡數字對不上。
-        # 加權指數(^TWII)在 MIS 的固定代號是"t00"(比照櫃買指數的"o00"),已用 h/l 跟
-        # yfinance 的數字完全對得上驗證過不是抓錯。MIS 抓不到時(網路問題等)才退回
-        # yfinance 的延遲報價,優雅降級不中斷。
-        if code == "^TWII":
-            mis_code, mis_otc, display_symbol = "t00", False, "^TWII"
-        else:
-            mis_code, mis_otc, display_symbol = code, otc, to_yf_symbol(code, otc)
+        # MIS 抓不到時(網路問題等)才退回 yfinance 的延遲報價,優雅降級不中斷。
         quote = intraday.get_intraday_quote(mis_code, mis_otc)
         if quote is None or quote.get("last_price") is None:
             quote = load_quote(code, otc)
@@ -755,6 +833,9 @@ if code == "^TWOII":
     else:
         st.caption(f"⚠️ TWSE即時報價暫時無法取得,顯示的是TPEx官方每日收盤行情(資料日期:{quote['asof'][:4]}-{quote['asof'][4:6]}-{quote['asof'][6:]})。")
     st.info("這個指數沒有任意區間的歷史K線資料可用,技術分析、做多訊號、分點掃描這幾個功能都需要歷史資料才能運作,暫不支援。")
+    # 這裡就要 st.stop() 了(下面沒有df可以用),所以急殺警示得在這裡就呼叫,不能等到
+    # 後面跟^TWII共用的區塊——那個區塊 ^TWOII 永遠不會執行到。
+    _make_index_reversal_fragment(mis_code, mis_otc, display_symbol, intraday.is_market_open_now())()
     st.stop()
 
 last_price = quote["last_price"]
@@ -888,6 +969,11 @@ if query_mode == "個股":
             unsafe_allow_html=True,
         )
 
+        reversal_signal = reversal_alert.compute_reversal_signal(
+            iq.get("day_high"), iq["last_price"], st.session_state[intraday_history_key]
+        )
+        _render_reversal_banner(reversal_signal)
+
         if intraday_market_open:
             st.caption(f"每10秒自動更新・資料時間 {iq.get('date', '')} {iq.get('time', '')}(TWSE官方即時報價,非精確逐筆)")
         else:
@@ -903,6 +989,10 @@ if query_mode == "個股":
         st.markdown("</div>", unsafe_allow_html=True)
 
     _render_intraday_strength_section()
+elif code == "^TWII":
+    # 櫃買指數(^TWOII)的急殺警示已經在報價卡片那段、st.stop()之前呼叫過了,這裡只剩
+    # 加權指數需要處理。
+    _make_index_reversal_fragment(mis_code, mis_otc, display_symbol, intraday.is_market_open_now())()
 
 IS_INDEX = code in INDEX_DISPLAY_NAMES  # 這裡只會是「個股」或「加權指數」,櫃買指數在上面已經 st.stop()
 
