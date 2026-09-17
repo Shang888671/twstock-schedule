@@ -38,8 +38,8 @@ HEADERS = {"User-Agent": "Mozilla/5.0"}
 
 TAIPEI_TZ = ZoneInfo("Asia/Taipei")
 MARKET_OPEN_TIME = dt_time(9, 0)
-MARKET_CLOSE_TIME = dt_time(13, 30)
-MARKET_SESSION_MINUTES = 270  # 09:00-13:30
+MARKET_CLOSE_TIME = dt_time(13, 45)  # 比官方收盤(13:30)多留15分鐘緩衝,涵蓋收盤前後的價格變動
+MARKET_SESSION_MINUTES = 270  # 09:00-13:30,盤中進度條用,故意不跟著MARKET_CLOSE_TIME延長
 
 # 正規化用的「典型幅度」,除以這個值再 clip 到 -1~1——例如開盤動能 2% 就已經算是滿格的強訊號。
 OPEN_MOMENTUM_TYPICAL_PCT = 2.0
