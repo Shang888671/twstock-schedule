@@ -529,18 +529,22 @@ try:
             quote = load_tpex_otc_index_quote()
         elif quote is not None:
             quote["symbol"] = "^TWOII"
-    elif code == "^TWII":
-        quote = load_quote(code, otc)
     else:
-        # 個股主報價卡改抓 TWSE 官方 mis.twse.com.tw 即時報價(intraday.py),不再用
-        # yfinance——yfinance 對台股有官方15~20分鐘延遲,MIS 才是真正即時,這樣主報價卡
-        # 才會跟下面「⚡盤中即時強弱」卡片顯示同一個價格,不會兩張卡數字對不上。
-        # MIS 抓不到時(網路問題等)才退回 yfinance 的延遲報價,優雅降級不中斷。
-        quote = intraday.get_intraday_quote(code, otc)
+        # 個股跟加權指數的主報價卡都改抓 TWSE 官方 mis.twse.com.tw 即時報價(intraday.py),
+        # 不再用 yfinance——yfinance 對台股有官方15~20分鐘延遲,MIS 才是真正即時,這樣個股
+        # 主報價卡才會跟下面「⚡盤中即時強弱」卡片顯示同一個價格,不會兩張卡數字對不上。
+        # 加權指數(^TWII)在 MIS 的固定代號是"t00"(比照櫃買指數的"o00"),已用 h/l 跟
+        # yfinance 的數字完全對得上驗證過不是抓錯。MIS 抓不到時(網路問題等)才退回
+        # yfinance 的延遲報價,優雅降級不中斷。
+        if code == "^TWII":
+            mis_code, mis_otc, display_symbol = "t00", False, "^TWII"
+        else:
+            mis_code, mis_otc, display_symbol = code, otc, to_yf_symbol(code, otc)
+        quote = intraday.get_intraday_quote(mis_code, mis_otc)
         if quote is None or quote.get("last_price") is None:
             quote = load_quote(code, otc)
         elif quote is not None:
-            quote["symbol"] = to_yf_symbol(code, otc)  # 顯示格式跟其他卡片一致,例如"2330.TW"
+            quote["symbol"] = display_symbol  # 顯示格式跟其他卡片一致,例如"2330.TW"/"^TWII"
     if quote is None:
         raise RuntimeError("查無資料")
 except Exception as e:
@@ -786,11 +790,12 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
-if code not in INDEX_DISPLAY_NAMES:
-    if "date" in quote:  # 有 date/time 欄位代表這次是 TWSE MIS 官方即時報價,不是 yfinance
-        st.caption(f"資料時間 {quote.get('date', '')} {quote.get('time', '')}(TWSE官方即時報價,非精確逐筆)")
-    else:
-        st.caption("⚠️ TWSE即時報價暫時無法取得,顯示的是yfinance延遲報價(官方延遲15~20分鐘)。")
+# 走到這裡的只會是「個股」或「加權指數」,^TWOII 前面已經 st.stop()——兩種情況都適用
+# 同一套「這次到底是MIS即時還是yfinance退回」的說明文字。
+if "date" in quote:  # 有 date/time 欄位代表這次是 TWSE MIS 官方即時報價,不是 yfinance
+    st.caption(f"資料時間 {quote.get('date', '')} {quote.get('time', '')}(TWSE官方即時報價,非精確逐筆)")
+else:
+    st.caption("⚠️ TWSE即時報價暫時無法取得,顯示的是yfinance延遲報價(官方延遲15~20分鐘)。")
 
 # --- 特殊時間點/重大訊息提醒(只有「個股」模式,不是多空訊號,只有「有事」時才顯示) ---
 # 除權息、期貨結算日、重大訊息公告都沒有方向性(不是利多也不是利空的判斷),所以不放進
