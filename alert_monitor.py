@@ -23,6 +23,7 @@ False 存檔就好——腳本會在下一輪(最多 PAUSED_CHECK_SECONDS 秒後
 """
 
 import importlib
+import os
 import time
 from collections import deque
 from datetime import datetime
@@ -35,10 +36,18 @@ import reversal_alert
 try:
     import alert_config
 except ImportError:
-    raise SystemExit(
-        "找不到 alert_config.py——複製 alert_config.example.py 成 alert_config.py,"
-        "填入你的 Telegram Bot Token/Chat ID 跟想監控的標的清單後再執行一次。"
-    )
+    # 本機沒有 alert_config.py(例如在雲端主機上執行,不會把含密鑰的檔案傳上去)——
+    # 改用 alert_config_cloud.py,它不含任何密鑰,改成從環境變數讀TELEGRAM_BOT_TOKEN
+    # 等設定(部署方式見 fly.toml/Dockerfile)。兩者接口一致(同樣的變數名),main()
+    # 之後的邏輯完全不用區分是哪一種來源。
+    if os.environ.get("TELEGRAM_BOT_TOKEN"):
+        import alert_config_cloud as alert_config
+    else:
+        raise SystemExit(
+            "找不到 alert_config.py——複製 alert_config.example.py 成 alert_config.py,"
+            "填入你的 Telegram Bot Token/Chat ID 跟想監控的標的清單後再執行一次。"
+            "(在雲端主機上執行的話,改用環境變數TELEGRAM_BOT_TOKEN,見alert_config_cloud.py)"
+        )
 
 POLL_INTERVAL_SECONDS = 15  # 交易時間內多久打一次API——比app.py的10秒稍寬鬆,背景長時間
                             # 跑要對TWSE MIS客氣一點,不用跟畫面互動所以差5秒感受不到差異。

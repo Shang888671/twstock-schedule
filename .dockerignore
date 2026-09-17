@@ -1,0 +1,10 @@
+# 白名單模式:預設全部排除,只留Dockerfile真正COPY會用到的檔案——這個repo還有整個
+# Streamlit App(app.py等)、.claude技能資料夾、data_cache等一大堆跟alert_monitor.py
+# 這支背景腳本無關的東西,排除掉能讓fly.io建置上傳的體積小很多。也確保含真實密鑰的
+# alert_config.py(本地檔案,已gitignore)不會被打包進build context、傳到雲端上。
+*
+!alert_monitor.py
+!intraday.py
+!reversal_alert.py
+!alert_config_cloud.py
+!Dockerfile
