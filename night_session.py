@@ -103,7 +103,12 @@ def get_night_session_history(lookback_days: int = LOOKBACK_DAYS_DEFAULT, sleep:
     """
     cached = pd.read_csv(CACHE_PATH, index_col=0, parse_dates=True) if CACHE_PATH.exists() else pd.DataFrame()
 
-    today = pd.Timestamp.today().normalize()
+    # 用台北時區的「今天」,不能用 pd.Timestamp.today()(沒指定時區,會用執行主機的系統時間)——
+    # 本機是台灣時間沒差,但 Streamlit Cloud 的雲端主機系統時間是 UTC(比台北慢8小時),
+    # 台北時間清晨0~8點這段 UTC 那邊的日曆還停在前一天,pd.bdate_range(end=today,...) 算出來
+    # 的候選日期就會漏掉「台北的今天」,導致最新一夜的資料永遠抓不到、卡在前一天不動
+    # (使用者實測雲端版「資料日期」卡在前一天,本機不會,已確認是這個時區問題)。
+    today = pd.Timestamp(datetime.now(_TAIPEI_TZ).date())
     # 抓寬一點(lookback_days 的 1.5 倍)再取尾巴 lookback_days 筆,扣掉週末/國定假日後才夠數。
     candidate_dates = pd.bdate_range(end=today, periods=int(lookback_days * 1.5) + 5)
     missing = [d for d in candidate_dates if cached.empty or d not in cached.index]
