@@ -152,6 +152,31 @@ with st.sidebar:
     period = st.selectbox("歷史資料區間", ["3mo", "6mo", "1y", "2y", "5y"], index=2)
     st.divider()
 
+    # 急殺警示門檻,原本只能在 alert_config.py(背景推播腳本用的設定檔)裡改,網頁上完全
+    # 沒有對應的輸入欄位——使用者發現後反應「網頁上沒看到可自填的地方」,這裡補上。
+    # 預設值直接帶入 reversal_alert.py 的全域常數,使用者不改動的話行為跟改之前完全一樣。
+    with st.expander("⚙️ 急殺警示門檻設定"):
+        st.caption("距今日高點拉回%、或近5分鐘變動%,任一超過門檻就升級警示。不確定要設多少"
+                   "可以先看下面警示卡片裡自動換算出的股價,再回頭調整這裡的百分比。")
+        custom_pullback_warn_pct = st.number_input(
+            "拉回警示門檻(%)", min_value=0.1, max_value=20.0,
+            value=reversal_alert.PULLBACK_WARN_PCT, step=0.1,
+        )
+        custom_pullback_severe_pct = st.number_input(
+            "急殺警示門檻(%,距高點拉回)", min_value=0.1, max_value=30.0,
+            value=reversal_alert.PULLBACK_SEVERE_PCT, step=0.1,
+        )
+        custom_fast_drop_severe_pct = st.number_input(
+            "急殺警示門檻(%,近5分鐘變動)", min_value=0.1, max_value=10.0,
+            value=reversal_alert.FAST_DROP_SEVERE_PCT, step=0.1,
+        )
+        if custom_pullback_severe_pct < custom_pullback_warn_pct:
+            st.warning("急殺門檻比拉回門檻還小,「拉回」這個中間等級實際上不會出現,"
+                       "拉回超過拉回門檻就會直接跳成急殺——如果不是故意的,建議急殺門檻"
+                       "設得比拉回門檻大。")
+
+    st.divider()
+
     # 雲端部署版本沒有本機的 xq_branch_data/(.dsl/CSV 個人資料被 .gitignore 排除,不會上傳
     # 到 GitHub),導致「檢查整個.dsl股票池」「RS排行」「分點掃描」這幾個功能在雲端版本上
     # 會是空的。加這個上傳功能讓使用者可以直接在網頁上把本機匯出的檔案傳上來,存到雲端App
@@ -296,11 +321,23 @@ def _render_reversal_banner(signal: dict) -> None:
         st.success(f"✅ 正常:{signal['detail']}")
 
 
-def _make_index_reversal_fragment(mis_code: str, mis_otc: bool, display_symbol: str, market_open: bool):
+def _make_index_reversal_fragment(
+    mis_code: str,
+    mis_otc: bool,
+    display_symbol: str,
+    market_open: bool,
+    pullback_warn_pct: float,
+    pullback_severe_pct: float,
+    fast_drop_severe_pct: float,
+):
     """加權指數/櫃買指數共用的「⚠️盤中急殺警示」區塊,包成工廠函式(不是直接定義一次
     fragment)是因為呼叫的位置不一樣——^TWII 走一般流程(後面才有K線/df可以用),^TWOII
     在報價卡片那段就直接 st.stop()(這個指數沒有歷史資料,後面的區塊完全用不到),兩邊
     都要在各自的 st.stop() 之前呼叫這個,不能共用同一個「寫死在某個位置」的 fragment。
+
+    pullback_warn_pct/pullback_severe_pct/fast_drop_severe_pct 是側邊欄「⚙️急殺警示門檻
+    設定」讀出來的值(使用者沒改的話就是 reversal_alert.py 的全域預設值),當參數傳進來
+    而不是直接在裡面讀 reversal_alert 常數,這樣使用者在側邊欄調整後才能立刻反映在這裡。
 
     只做急殺警示,不做像個股那樣的5訊號綜合評分——指數沒有近5日均量/委買委賣力道以外的
     訊號可以組成那一套評分邏輯,硬套意義不大。
@@ -324,7 +361,12 @@ def _make_index_reversal_fragment(mis_code: str, mis_otc: bool, display_symbol: 
         st.session_state[history_key] = hist[-30:]
 
         signal = reversal_alert.compute_reversal_signal(
-            iq.get("day_high"), iq["last_price"], st.session_state[history_key]
+            iq.get("day_high"),
+            iq["last_price"],
+            st.session_state[history_key],
+            pullback_warn_pct=pullback_warn_pct,
+            pullback_severe_pct=pullback_severe_pct,
+            fast_drop_severe_pct=fast_drop_severe_pct,
         )
 
         st.markdown(
@@ -347,9 +389,10 @@ def _make_index_reversal_fragment(mis_code: str, mis_otc: bool, display_symbol: 
             st.button("🔄 立即刷新", key=f"index_reversal_manual_refresh_{mis_code}")
 
         st.caption(
-            "拉回幅度=距今日高點回落%,近5分鐘變動幅度抓的是「速度」,任一超過門檻就升級警示。"
-            "門檻(1%/2%/近5分鐘0.8%)是主觀訂的,不是統計驗證過的數字——這一步先驗證邏輯"
-            "抓得準不準,還沒有背景推播,離開頁面不會主動通知你。純觀察參考,不是下單訊號。"
+            f"拉回幅度=距今日高點回落%,近5分鐘變動幅度抓的是「速度」,任一超過門檻就升級警示。"
+            f"目前門檻:拉回{pullback_warn_pct:.1f}%/急殺{pullback_severe_pct:.1f}%/近5分鐘"
+            f"{fast_drop_severe_pct:.1f}%(側邊欄「⚙️急殺警示門檻設定」可調整)。還沒有背景推播,"
+            "離開頁面不會主動通知你。純觀察參考,不是下單訊號。"
         )
         st.markdown("</div>", unsafe_allow_html=True)
 
@@ -835,7 +878,10 @@ if code == "^TWOII":
     st.info("這個指數沒有任意區間的歷史K線資料可用,技術分析、做多訊號、分點掃描這幾個功能都需要歷史資料才能運作,暫不支援。")
     # 這裡就要 st.stop() 了(下面沒有df可以用),所以急殺警示得在這裡就呼叫,不能等到
     # 後面跟^TWII共用的區塊——那個區塊 ^TWOII 永遠不會執行到。
-    _make_index_reversal_fragment(mis_code, mis_otc, display_symbol, intraday.is_market_open_now())()
+    _make_index_reversal_fragment(
+        mis_code, mis_otc, display_symbol, intraday.is_market_open_now(),
+        custom_pullback_warn_pct, custom_pullback_severe_pct, custom_fast_drop_severe_pct,
+    )()
     st.stop()
 
 last_price = quote["last_price"]
@@ -970,7 +1016,12 @@ if query_mode == "個股":
         )
 
         reversal_signal = reversal_alert.compute_reversal_signal(
-            iq.get("day_high"), iq["last_price"], st.session_state[intraday_history_key]
+            iq.get("day_high"),
+            iq["last_price"],
+            st.session_state[intraday_history_key],
+            pullback_warn_pct=custom_pullback_warn_pct,
+            pullback_severe_pct=custom_pullback_severe_pct,
+            fast_drop_severe_pct=custom_fast_drop_severe_pct,
         )
         _render_reversal_banner(reversal_signal)
 
@@ -992,7 +1043,10 @@ if query_mode == "個股":
 elif code == "^TWII":
     # 櫃買指數(^TWOII)的急殺警示已經在報價卡片那段、st.stop()之前呼叫過了,這裡只剩
     # 加權指數需要處理。
-    _make_index_reversal_fragment(mis_code, mis_otc, display_symbol, intraday.is_market_open_now())()
+    _make_index_reversal_fragment(
+        mis_code, mis_otc, display_symbol, intraday.is_market_open_now(),
+        custom_pullback_warn_pct, custom_pullback_severe_pct, custom_fast_drop_severe_pct,
+    )()
 
 IS_INDEX = code in INDEX_DISPLAY_NAMES  # 這裡只會是「個股」或「加權指數」,櫃買指數在上面已經 st.stop()
 
