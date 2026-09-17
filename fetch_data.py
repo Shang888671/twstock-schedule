@@ -33,6 +33,13 @@ HEADERS = {"User-Agent": "Mozilla/5.0"}
 # 沒辦法拿來做像加權指數那樣的完整K線圖,只能拿最新一筆當即時報價卡用。
 TPEX_INDEX_URL = "https://www.tpex.org.tw/openapi/v1/tpex_index"
 
+# 櫃買指數本身沒有「成交量」(指數不是股票,沒有股數),volume_profile.py要的Volume欄位
+# 借用「上櫃市場當日成交量值指數」這個端點的TradeVolume(全市場合計量)當代理指標——
+# 跟tpex_index一樣只回傳「這個月」的資料,日期格式卻是民國年(例如"1150917"),跟
+# tpex_index本身已經是西元年("20260917")不一樣,合併時要注意換算。
+TPEX_DAILY_TRADING_INDEX_URL = "https://www.tpex.org.tw/openapi/v1/tpex_daily_trading_index"
+OTC_INDEX_HISTORY_CACHE = CACHE_DIR / "otc_index_history.csv"
+
 
 def to_yf_symbol(code: str, otc: bool = False) -> str:
     """把純數字股票代號轉成 yfinance 用的代號。
@@ -131,6 +138,71 @@ def get_tpex_otc_index_previous_day() -> dict | None:
         }
     except (KeyError, ValueError):
         return None
+
+
+def _roc_date_to_western(roc_date: str) -> str:
+    """民國年日期字串("1150917")轉西元"YYYYMMDD"("20260917")。"""
+    year = int(roc_date[:3]) + 1911
+    return f"{year}{roc_date[3:]}"
+
+
+def update_otc_index_history_cache() -> pd.DataFrame:
+    """把TPEx「這個月」的櫃買指數OHLC(tpex_index)跟「這個月」的全市場成交量
+    (tpex_daily_trading_index)依日期合併,累積存進本地快取(data_cache/otc_index_history.csv),
+    湊出 volume_profile.py 支撐/阻力要用的多天OHLCV資料。
+
+    這兩個TPEx端點都只回傳當月資料、沒有任意區間查詢能力,跟 margin_data.py(融資融券)
+    完全一樣的限制——這裡用同一套解法,本地逐次累積,已經存過的日期不會被覆蓋(用Date
+    去重,保留新抓到的版本,因為當月最後一筆的Change/Volume在盤中可能還會變動)。差別是
+    這裡一次可以拿到「整個月」不是「一天」,所以不用每天都真的打開app才累積得到資料,
+    累積速度比逐日快取快很多——只要這個月裡開過一次app,那個月份就整個進快取了。
+
+    抓取失敗時只回傳現有快取(不因為單次抓取失敗就把本地已經累積的資料清空、也不會
+    寫入壞資料)。回傳欄位跟 get_history() 相容(Date/Open/High/Low/Close/Volume),
+    方便直接餵給 volume_profile.find_nearest_supports()/find_nearest_resistances()。
+    """
+    if OTC_INDEX_HISTORY_CACHE.exists():
+        cache_df = pd.read_csv(OTC_INDEX_HISTORY_CACHE, dtype={"Date": str})
+    else:
+        cache_df = pd.DataFrame(columns=["Date", "Open", "High", "Low", "Close", "Volume"])
+
+    try:
+        idx_data = requests.get(TPEX_INDEX_URL, headers=HEADERS, timeout=15).json()
+        vol_data = requests.get(TPEX_DAILY_TRADING_INDEX_URL, headers=HEADERS, timeout=15).json()
+    except Exception:
+        idx_data, vol_data = None, None
+
+    if idx_data and vol_data:
+        volume_by_date = {}
+        for row in vol_data:
+            try:
+                volume_by_date[_roc_date_to_western(row["Date"])] = float(row["TradeVolume"])
+            except (KeyError, ValueError):
+                continue
+
+        new_rows = []
+        for row in idx_data:
+            date_str = row.get("Date")
+            try:
+                new_rows.append({
+                    "Date": date_str,
+                    "Open": float(row["Open"]),
+                    "High": float(row["High"]),
+                    "Low": float(row["Low"]),
+                    "Close": float(row["Close"]),
+                    "Volume": volume_by_date.get(date_str),
+                })
+            except (KeyError, ValueError):
+                continue
+
+        if new_rows:
+            new_df = pd.DataFrame(new_rows)
+            cache_df = new_df if cache_df.empty else pd.concat([cache_df, new_df], ignore_index=True)
+            cache_df = cache_df.drop_duplicates(subset="Date", keep="last")
+
+    cache_df = cache_df.sort_values("Date").reset_index(drop=True)
+    cache_df.to_csv(OTC_INDEX_HISTORY_CACHE, index=False)
+    return cache_df
 
 
 def get_history(

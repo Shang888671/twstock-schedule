@@ -22,6 +22,7 @@ from fetch_data import (
     get_chinese_name,
     get_tpex_otc_index_quote,
     get_tpex_otc_index_previous_day,
+    update_otc_index_history_cache,
 )
 from indicators import add_indicators
 from volume_profile import find_nearest_supports, find_nearest_resistances
@@ -1001,7 +1002,32 @@ if code == "^TWOII":
         st.caption(f"資料時間 {quote.get('date', '')} {quote.get('time', '')}(TWSE官方即時報價,非精確逐筆)")
     else:
         st.caption(f"⚠️ TWSE即時報價暫時無法取得,顯示的是TPEx官方每日收盤行情(資料日期:{quote['asof'][:4]}-{quote['asof'][4:6]}-{quote['asof'][6:]})。")
-    st.info("這個指數沒有任意區間的歷史K線資料可用,技術分析、做多訊號、分點掃描這幾個功能都需要歷史資料才能運作,暫不支援。")
+    st.info("這個指數沒有任意區間的歷史K線資料可用,K線圖、做多訊號、分點掃描這幾個功能都需要歷史資料才能運作,暫不支援。")
+
+    # 籌碼支撐/阻力——櫃買指數本身沒有股數意義上的「成交量」,借用TPEx「上櫃市場當日
+    # 成交量值指數」的全市場合計量當代理指標(見fetch_data.update_otc_index_history_cache
+    # 的docstring)。這兩個TPEx端點都只回傳當月資料,所以用本地快取逐次累積,累積到
+    # volume_profile.py理想的60個交易日(近3個月)之前,支撐/阻力先用「目前累積到的天數」
+    # 算出初步結果——使用者確認過寧可先看到不完整版本、每天累積慢慢變準,不用等湊滿
+    # 3個月才顯示,累積速度也遠比逐日累積快(一次進帳一整個月)。
+    try:
+        otc_hist_df = update_otc_index_history_cache()
+    except Exception:
+        otc_hist_df = None
+    if otc_hist_df is not None and not otc_hist_df.empty:
+        otc_supports = find_nearest_supports(otc_hist_df)
+        otc_resistances = find_nearest_resistances(otc_hist_df)
+        otc_hist_days = len(otc_hist_df)
+        if otc_supports:
+            support_desc = "、".join(f"{s['price']:,.2f}({s['price']/quote['last_price'] - 1:+.1%})" for s in otc_supports)
+            st.caption(f"籌碼支撐(成交量分佈區域高峰,累積{otc_hist_days}個交易日,目標近3個月/60日,離目前指數最近的{len(otc_supports)}個):{support_desc}")
+        else:
+            st.caption(f"籌碼資料累積中(目前{otc_hist_days}個交易日),還找不到明顯支撐。")
+        if otc_resistances:
+            resistance_desc = "、".join(f"{r['price']:,.2f}({r['price']/quote['last_price'] - 1:+.1%})" for r in otc_resistances)
+            st.caption(f"籌碼阻力(成交量分佈區域高峰,累積{otc_hist_days}個交易日,目標近3個月/60日,離目前指數最近的{len(otc_resistances)}個):{resistance_desc}")
+        else:
+            st.caption(f"籌碼資料累積中(目前{otc_hist_days}個交易日),還找不到明顯阻力。")
     # 這裡就要 st.stop() 了(下面沒有df可以用),所以急殺警示得在這裡就呼叫,不能等到
     # 後面跟^TWII共用的區塊——那個區塊 ^TWOII 永遠不會執行到。
     if enable_reversal_alert:
