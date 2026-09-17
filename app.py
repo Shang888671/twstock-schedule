@@ -975,7 +975,19 @@ if night_signal:
     strength = night_signal["strength"]
     strength_emoji = {"熱絡": "🔥", "普通": "➖", "清淡": "💤"}.get(strength, "❔")
     strength_text = f"{strength_emoji} {strength}" if strength else "資料不足"
-    ratio_str = f"(量能比 {night_signal['ratio']:.2f}倍)" if night_signal["ratio"] is not None else ""
+    ratio_str = f"(量能比 {night_signal['ratio']:.2f}倍・評分{night_signal['long_score100']})" if night_signal["ratio"] is not None else ""
+
+    # 近3夜短期比較——使用者要求「量能比可以做個評分跟前三天比較」,近20夜均量反應比較慢,
+    # 跟這幾天比才看得出是不是剛開始轉熱/轉冷,兩個時間窗一起看比單看20夜全面(見
+    # night_session.compute_night_session_strength() 的方法說明)。
+    if night_signal["short_ratio"] is not None:
+        short_emoji = {"熱絡": "🔥", "普通": "➖", "清淡": "💤"}.get(night_signal["short_strength"], "❔")
+        short_badge_str = (
+            f"{short_emoji} 近{night_signal['short_window_days']}夜{night_signal['short_strength']}"
+            f"(量能比{night_signal['short_ratio']:.2f}倍・評分{night_signal['short_score100']})"
+        )
+    else:
+        short_badge_str = None
 
     chg = night_signal["front_month_change_pct"]
     if chg is None:
@@ -1023,18 +1035,23 @@ if night_signal:
     elif live_participation.get("reason") == "closed":
         # 現在不在夜盤時段,不代表使用者不想看評分——「上一個已結束的夜盤」最終評分還是有
         # 參考價值(比照櫃買指數位階卡片「今日/昨日」兩段式呈現的既有設計:不是有資料才顯示、
-        # 沒資料就整段消失,而是永遠有東西可以看)。用同一套 ratio_to_score100() 換算,
-        # 才能跟即時評分放在同一個0~100尺度上直接比較。
-        last_night_score = night_session.ratio_to_score100(night_signal["ratio"])
+        # 沒資料就整段消失,而是永遠有東西可以看)。直接沿用 night_signal 已經算好的
+        # long_score100/short_score100,不用重算,才能跟即時評分放在同一個0~100尺度上比較。
+        last_night_score = night_signal["long_score100"]
         if last_night_score is not None:
             ln_color = "#f97316" if last_night_score >= 75 else ("#38bdf8" if last_night_score <= 25 else "#9ca3af")
+            short_score_note = (
+                f'近{night_signal["short_window_days"]}夜評分{night_signal["short_score100"]}({night_signal["short_strength"]})・'
+                if night_signal["short_score100"] is not None
+                else ""
+            )
             live_block_html = (
                 '<div style="margin-top:1rem; padding-top:0.8rem; border-top:1px solid rgba(255,255,255,0.08);">'
                 f'<div class="quote-symbol" style="font-size:0.85rem;">📅 昨晚({night_signal["date"]})最終評分(收盤結算,非步調比較)</div>'
                 f'<div class="quote-price-row"><div class="quote-price" style="font-size:2.4rem; color:{ln_color};">{last_night_score}</div>'
                 f'<div class="quote-badge badge-flat">{strength_text}</div></div>'
                 f"{_build_participation_gauge_html(last_night_score)}"
-                '<div style="font-size:0.78rem; color:#8b93a7; margin-top:0.4rem;">今晚15:00開盤後這裡會換成盤中即時評分。</div></div>'
+                f'<div style="font-size:0.78rem; color:#8b93a7; margin-top:0.4rem;">{short_score_note}今晚15:00開盤後這裡會換成盤中即時評分。</div></div>'
             )
         else:
             live_block_html = (
@@ -1047,6 +1064,14 @@ if night_signal:
             'color:#8b93a7; font-size:0.85rem;">⚡ 夜盤剛開盤或即時資料暫時無法取得,評分還無法計算。</div>'
         )
 
+    short_badge_html = f'<div class="quote-badge badge-flat">{short_badge_str}</div>' if short_badge_str else ""
+    short_stat_html = (
+        f'<div class="stat-item"><div class="label">近{night_signal["short_window_days"]}夜均量</div>'
+        f'<div class="value">{night_signal["short_avg_volume"]:,.0f} 口</div></div>'
+        if night_signal["short_avg_volume"] is not None
+        else ""
+    )
+
     st.markdown(
         f"""
         <div class="quote-card">
@@ -1054,10 +1079,12 @@ if night_signal:
             <div class="quote-price-row">
                 <div class="quote-badge badge-flat">{strength_text}{ratio_str}</div>
                 <div class="quote-badge {chg_badge_class}">{chg_str}</div>
+                {short_badge_html}
             </div>
             <div class="stat-row">
                 <div class="stat-item"><div class="label">夜盤成交量</div><div class="value">{night_signal['volume']:,} 口</div></div>
                 <div class="stat-item"><div class="label">近20日均量</div><div class="value">{night_signal['avg_volume']:,.0f} 口</div></div>
+                {short_stat_html}
                 <div class="stat-item"><div class="label">資料日期</div><div class="value">{night_signal['date']}</div></div>
             </div>
             {live_block_html}
@@ -1069,6 +1096,8 @@ if night_signal:
         "台股期貨(TX)15:00~次日05:00盤後交易時段全合約加總成交量,對比近20個交易日均量的"
         "比值,反映的是台灣資金自己的參與度/信心強度,不是多空方向——量大只代表當晚交易熱絡、"
         "資金關注度高,不代表偏多或偏空。近月合約當晚漲跌%只是補充參考,不是這個指標的主體。"
+        "另外多算一組「近3夜」短期比較(評分算法一樣,只是基準天數從20夜換成3夜)——20夜均量"
+        "反應比較慢,跟最近3夜比才看得出是不是剛開始轉熱/轉冷,兩個時間窗一起看比單看20夜全面。"
         "純觀察參考,不是下單訊號。"
     )
     st.caption(

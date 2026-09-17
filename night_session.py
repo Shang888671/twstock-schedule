@@ -131,14 +131,42 @@ def get_night_session_history(lookback_days: int = LOOKBACK_DAYS_DEFAULT, sleep:
     return combined.tail(lookback_days) if not combined.empty else combined
 
 
-def compute_night_session_strength(lookback_days: int = LOOKBACK_DAYS_DEFAULT) -> dict | None:
+SHORT_WINDOW_DAYS_DEFAULT = 3  # 使用者要求「量能比再做個評分跟前三天比較」
+
+
+def _ratio_to_strength_label(ratio: float | None) -> str | None:
+    """量能比換算成熱絡/普通/清淡文字標籤,長期(近20夜)、短期(近3夜)兩個時間窗共用同一套
+    門檻(STRENGTH_STRONG_RATIO/STRENGTH_WEAK_RATIO),標籤才有一致的意義。"""
+    if ratio is None:
+        return None
+    if ratio >= STRENGTH_STRONG_RATIO:
+        return "熱絡"
+    if ratio <= STRENGTH_WEAK_RATIO:
+        return "清淡"
+    return "普通"
+
+
+def compute_night_session_strength(
+    lookback_days: int = LOOKBACK_DAYS_DEFAULT, short_window_days: int = SHORT_WINDOW_DAYS_DEFAULT
+) -> dict | None:
     """最近一個交易日的夜盤成交量,對比「今天以前」近 lookback_days 天的均量,算出參與度
     強弱標記——**這是「參與度/信心」強弱,不是多空方向**,量大只代表交易熱絡,不代表偏多
     或偏空。強弱門檻(1.5倍/0.5倍)比照 `us_market.py` 的既有設計,同樣是主觀訂的,不是
     統計驗證過的數字。
 
+    **近3夜短期比較**:近20夜均量是長期基準,反應比較慢,同一份 hist 資料再另外算一個
+    「跟近 short_window_days 夜比」的短期版本(兩者共用同一次 get_night_session_history()
+    呼叫,不用多打API)——20夜version看的是「跟長期正常水準比」,3夜version看的是「跟這幾天
+    的氣氛比,是不是剛開始轉熱/轉冷」,兩個時間窗一起看才夠全面,單看20夜可能會被過去某幾週
+    的特殊事件拉高/拉低基準、蓋掉最近幾天真正的轉折訊號。`short_ratio`/`short_score100` 資料
+    不足(少於1天基準)時是 None,呼叫端優雅處理,不是錯誤。
+
+    分數(`long_score100`/`short_score100`)用 `ratio_to_score100()` 統一換算,兩個時間窗
+    的分數才能放在同一個0~100尺度上直接比較。
+
     回傳 {"date", "volume", "avg_volume", "ratio", "strength"("熱絡"/"普通"/"清淡"),
-    "front_month_change_pct"}。資料不足(少於2天)時回傳 None。
+    "front_month_change_pct", "long_score100", "short_window_days", "short_avg_volume",
+    "short_ratio", "short_score100"}。資料不足(少於2天)時回傳 None。
     """
     hist = get_night_session_history(lookback_days=lookback_days + 1)
     if len(hist) < 2:
@@ -149,14 +177,13 @@ def compute_night_session_strength(lookback_days: int = LOOKBACK_DAYS_DEFAULT) -
     avg_volume = baseline.mean()
     ratio = latest["volume"] / avg_volume if avg_volume > 0 else None
 
-    if ratio is None:
-        strength = None
-    elif ratio >= STRENGTH_STRONG_RATIO:
-        strength = "熱絡"
-    elif ratio <= STRENGTH_WEAK_RATIO:
-        strength = "清淡"
-    else:
-        strength = "普通"
+    strength = _ratio_to_strength_label(ratio)
+
+    short_baseline = baseline.tail(short_window_days)
+    short_avg_volume = short_baseline.mean() if len(short_baseline) > 0 else None
+    short_ratio = (
+        latest["volume"] / short_avg_volume if short_avg_volume is not None and short_avg_volume > 0 else None
+    )
 
     return {
         "date": hist.index[-1].strftime("%Y-%m-%d"),
@@ -165,6 +192,12 @@ def compute_night_session_strength(lookback_days: int = LOOKBACK_DAYS_DEFAULT) -
         "ratio": ratio,
         "strength": strength,
         "front_month_change_pct": latest["front_month_change_pct"],
+        "long_score100": ratio_to_score100(ratio),
+        "short_window_days": short_window_days,
+        "short_avg_volume": short_avg_volume,
+        "short_ratio": short_ratio,
+        "short_strength": _ratio_to_strength_label(short_ratio),
+        "short_score100": ratio_to_score100(short_ratio),
     }
 
 
@@ -336,7 +369,9 @@ if __name__ == "__main__":
         print(f"日期:{result['date']}")
         print(f"夜盤成交量:{result['volume']:,} 口")
         print(f"近期均量:{result['avg_volume']:,.0f} 口")
-        print(f"量能比:{result['ratio']:.2f}倍 → {result['strength']}")
+        print(f"量能比:{result['ratio']:.2f}倍 → {result['strength']}(評分{result['long_score100']})")
+        if result["short_ratio"] is not None:
+            print(f"近{result['short_window_days']}夜量能比:{result['short_ratio']:.2f}倍(評分{result['short_score100']})")
         print(f"近月合約當晚漲跌:{result['front_month_change_pct']}%")
     else:
         print("資料不足")
