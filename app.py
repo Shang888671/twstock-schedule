@@ -153,8 +153,9 @@ with st.sidebar:
         code = "^TWII" if query_mode == "加權指數" else "^TWOII"
         otc = False
         st.caption(
-            "櫃買指數(^TWOII)改抓TWSE MIS即時報價(真即時,非延遲),但沒有歷史K線資料,"
-            "技術分析/做多訊號/分點掃描功能無法使用。"
+            "櫃買指數(^TWOII)改抓TWSE MIS即時報價(真即時,非延遲)。K線圖/籌碼支撐阻力"
+            "靠本地逐次累積(沒有任意區間可選,每次查詢自動累積新的一個月),做多訊號/"
+            "分點掃描需要三大法人/權證資料,指數沒有,不支援。"
             if query_mode == "櫃買指數" else "加權指數(^TWII)功能跟查個股一樣完整。"
         )
     period = st.selectbox("歷史資料區間", ["3mo", "6mo", "1y", "2y", "5y"], index=2)
@@ -1002,32 +1003,49 @@ if code == "^TWOII":
         st.caption(f"資料時間 {quote.get('date', '')} {quote.get('time', '')}(TWSE官方即時報價,非精確逐筆)")
     else:
         st.caption(f"⚠️ TWSE即時報價暫時無法取得,顯示的是TPEx官方每日收盤行情(資料日期:{quote['asof'][:4]}-{quote['asof'][4:6]}-{quote['asof'][6:]})。")
-    st.info("這個指數沒有任意區間的歷史K線資料可用,K線圖、做多訊號、分點掃描這幾個功能都需要歷史資料才能運作,暫不支援。")
 
-    # 籌碼支撐/阻力——櫃買指數本身沒有股數意義上的「成交量」,借用TPEx「上櫃市場當日
-    # 成交量值指數」的全市場合計量當代理指標(見fetch_data.update_otc_index_history_cache
-    # 的docstring)。這兩個TPEx端點都只回傳當月資料,所以用本地快取逐次累積,累積到
-    # volume_profile.py理想的60個交易日(近3個月)之前,支撐/阻力先用「目前累積到的天數」
-    # 算出初步結果——使用者確認過寧可先看到不完整版本、每天累積慢慢變準,不用等湊滿
-    # 3個月才顯示,累積速度也遠比逐日累積快(一次進帳一整個月)。
+    # K線圖+籌碼支撐/阻力——櫃買指數沒有任意區間歷史資料API,用本地快取逐次累積湊出來
+    # (見fetch_data.update_otc_index_history_cache的docstring),跟margin_data.py同一套
+    # 「沒有歷史API只能本地累積」的解法,差別是這裡一次進帳一整個月,累積速度快很多。
+    # 支撐/阻力也是同一份資料算的,先用「目前累積到的天數」算初步結果,不等湊滿
+    # volume_profile.py理想的60個交易日(近3個月)才顯示——使用者確認過寧可先看不完整
+    # 版本、每天累積慢慢變準。EMA56/MACD/RSI這些需要較長天數才有意義的指標,累積天數
+    # 不足時add_indicators()算出來的值大多是NaN,_series_data()會自動濾掉、圖上就是
+    # 沒有那條線,不會顯示錯誤數字,隨著本地快取累積會自動出現,不用另外處理。
     try:
         otc_hist_df = update_otc_index_history_cache()
     except Exception:
         otc_hist_df = None
+
     if otc_hist_df is not None and not otc_hist_df.empty:
-        otc_supports = find_nearest_supports(otc_hist_df)
-        otc_resistances = find_nearest_resistances(otc_hist_df)
         otc_hist_days = len(otc_hist_df)
+        otc_indexed_df = add_indicators(otc_hist_df)
+        otc_supports = find_nearest_supports(otc_indexed_df)
+        otc_resistances = find_nearest_resistances(otc_indexed_df)
+        otc_chart_html = _build_tradingview_chart_html(
+            otc_indexed_df, f"{quote['symbol']} · {name}", height=560,
+            supports=otc_supports, resistances=otc_resistances,
+        )
+        components.html(otc_chart_html, height=560, scrolling=False)
+        st.caption(
+            f"K線圖累積{otc_hist_days}個交易日(目標近3個月/60日,每次查詢自動累積新的一個月),"
+            "不是任意區間——沒有歷史API可以直接拉,用本地快取逐次累積,均線/RSI/MACD等需要"
+            "較長天數的指標在累積足夠天數前會是空的,不影響蠟燭本身。"
+        )
         if otc_supports:
             support_desc = "、".join(f"{s['price']:,.2f}({s['price']/quote['last_price'] - 1:+.1%})" for s in otc_supports)
-            st.caption(f"籌碼支撐(成交量分佈區域高峰,累積{otc_hist_days}個交易日,目標近3個月/60日,離目前指數最近的{len(otc_supports)}個):{support_desc}")
+            st.caption(f"籌碼支撐(成交量分佈區域高峰,離目前指數最近的{len(otc_supports)}個):{support_desc}")
         else:
-            st.caption(f"籌碼資料累積中(目前{otc_hist_days}個交易日),還找不到明顯支撐。")
+            st.caption("籌碼資料累積中,還找不到明顯支撐。")
         if otc_resistances:
             resistance_desc = "、".join(f"{r['price']:,.2f}({r['price']/quote['last_price'] - 1:+.1%})" for r in otc_resistances)
-            st.caption(f"籌碼阻力(成交量分佈區域高峰,累積{otc_hist_days}個交易日,目標近3個月/60日,離目前指數最近的{len(otc_resistances)}個):{resistance_desc}")
+            st.caption(f"籌碼阻力(成交量分佈區域高峰,離目前指數最近的{len(otc_resistances)}個):{resistance_desc}")
         else:
-            st.caption(f"籌碼資料累積中(目前{otc_hist_days}個交易日),還找不到明顯阻力。")
+            st.caption("籌碼資料累積中,還找不到明顯阻力。")
+    else:
+        st.info("K線圖資料暫時無法取得。")
+    st.info("這個指數沒有任意區間可選的歷史資料(只能靠本地累積),做多訊號、分點掃描這兩個功能需要三大法人/權證/分點籌碼資料,指數沒有這些資料,不支援。")
+
     # 這裡就要 st.stop() 了(下面沒有df可以用),所以急殺警示得在這裡就呼叫,不能等到
     # 後面跟^TWII共用的區塊——那個區塊 ^TWOII 永遠不會執行到。
     if enable_reversal_alert:

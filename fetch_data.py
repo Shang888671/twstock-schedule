@@ -202,7 +202,14 @@ def update_otc_index_history_cache() -> pd.DataFrame:
 
     cache_df = cache_df.sort_values("Date").reset_index(drop=True)
     cache_df.to_csv(OTC_INDEX_HISTORY_CACHE, index=False)
-    return cache_df
+
+    # 存檔用「Date」欄位(字串)方便CSV往返,回傳給呼叫端時轉成跟get_history()一樣的
+    # DatetimeIndex(欄名"date"),這樣才能直接餵給add_indicators()/K線圖畫圖函式,
+    # 不用呼叫端自己再轉一次。
+    result_df = cache_df.copy()
+    result_df.index = pd.to_datetime(result_df.pop("Date"), format="%Y%m%d")
+    result_df.index.name = "date"
+    return result_df
 
 
 def get_history(
