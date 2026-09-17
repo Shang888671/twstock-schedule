@@ -57,16 +57,25 @@ def compute_reversal_signal(
     震盪就誤報。不傳(None)就用全域預設值——這是刻意的參數化,不是加了又不用的擺設:
     加權指數/櫃買指數這種波動平穩的標的本來就適合用全域預設值,不用每個都特別設定。
 
-    回傳 {"pullback_pct", "recent_change_pct", "severity"("正常"/"拉回"/"急殺"), "detail"}。
-    兩個百分比欄位在資料不足時是 None,呼叫端顯示時要自己處理。
+    回傳 {"pullback_pct", "recent_change_pct", "severity"("正常"/"拉回"/"急殺"), "detail",
+    "warn_price", "severe_price"}。"warn_price"/"severe_price" 是門檻百分比換算成的實際
+    股價(距今日高點跌破這個價位就分別觸發拉回/急殺),只需要 day_high 就能算,不需要
+    last_price——這是給使用者設定/檢視門檻時方便對照的參考價位,不是拿來判斷警示用的
+    (判斷還是用 pullback_pct 那條件,價格只是換算顯示)。兩個百分比欄位(pullback_pct/
+    recent_change_pct)在資料不足時是 None,呼叫端顯示時要自己處理。
     """
     pullback_warn_pct = PULLBACK_WARN_PCT if pullback_warn_pct is None else pullback_warn_pct
     pullback_severe_pct = PULLBACK_SEVERE_PCT if pullback_severe_pct is None else pullback_severe_pct
     fast_drop_severe_pct = FAST_DROP_SEVERE_PCT if fast_drop_severe_pct is None else fast_drop_severe_pct
 
     pullback_pct = None
-    if day_high and last_price is not None and day_high > 0:
-        pullback_pct = (day_high - last_price) / day_high * 100
+    warn_price = None
+    severe_price = None
+    if day_high and day_high > 0:
+        warn_price = day_high * (1 - pullback_warn_pct / 100)
+        severe_price = day_high * (1 - pullback_severe_pct / 100)
+        if last_price is not None:
+            pullback_pct = (day_high - last_price) / day_high * 100
 
     recent_change_pct = None
     if price_history:
@@ -93,6 +102,8 @@ def compute_reversal_signal(
         detail_parts.append(f"距今日高點{day_high:,.2f}拉回{pullback_pct:.2f}%")
     if recent_change_pct is not None:
         detail_parts.append(f"近5分鐘{recent_change_pct:+.2f}%")
+    if warn_price is not None:
+        detail_parts.append(f"跌破{warn_price:,.2f}觸發拉回、跌破{severe_price:,.2f}觸發急殺")
     detail = "、".join(detail_parts) if detail_parts else "樣本蒐集中"
 
     return {
@@ -100,6 +111,8 @@ def compute_reversal_signal(
         "recent_change_pct": recent_change_pct,
         "severity": severity,
         "detail": detail,
+        "warn_price": warn_price,
+        "severe_price": severe_price,
     }
 
 
