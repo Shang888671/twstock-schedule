@@ -15,7 +15,14 @@ import calendar_events
 import intraday
 import night_session
 import reversal_alert
-from fetch_data import get_quote, get_history, to_yf_symbol, get_chinese_name, get_tpex_otc_index_quote
+from fetch_data import (
+    get_quote,
+    get_history,
+    to_yf_symbol,
+    get_chinese_name,
+    get_tpex_otc_index_quote,
+    get_tpex_otc_index_previous_day,
+)
 from indicators import add_indicators
 from volume_profile import find_nearest_supports, find_nearest_resistances
 from us_market import get_us_overnight_signal, US_MARKET_SYMBOLS, STRENGTH_WEIGHT, SCORE_STRONG_THRESHOLD
@@ -802,41 +809,69 @@ if us_signal:
     # 跟「現在盤中實際走勢」。這是TWSE MIS即時資料(現在進行式),跟上面4個指標的yfinance
     # 隔夜資料(已經發生、相對固定)是不同性質的東西,故意不混進同一個加權分數裡一起算,
     # 分開呈現才不會互相稀釋各自的訊號意義。
+    def _otc_position_badge(score100: int) -> tuple[str, str]:
+        if score100 >= 60:
+            return "badge-up", "貼近高點"
+        if score100 > 0:
+            return "badge-up", "偏上半區"
+        if score100 == 0:
+            return "badge-flat", "區間中點"
+        if score100 > -60:
+            return "badge-down", "偏下半區"
+        return "badge-down", "貼近低點"
+
     try:
         otc_quote = intraday.get_intraday_quote("o00", True)
     except Exception:
         otc_quote = None
     otc_position = intraday.signal_range_position(otc_quote) if otc_quote else {"available": False}
 
-    if otc_position.get("available"):
-        otc_value = otc_position["value"]
-        otc_score100 = round(otc_value * 100)
-        if otc_score100 >= 60:
-            otc_badge_class, otc_label = "badge-up", "貼近今日高點"
-        elif otc_score100 > 0:
-            otc_badge_class, otc_label = "badge-up", "偏上半區"
-        elif otc_score100 == 0:
-            otc_badge_class, otc_label = "badge-flat", "區間中點"
-        elif otc_score100 > -60:
-            otc_badge_class, otc_label = "badge-down", "偏下半區"
-        else:
-            otc_badge_class, otc_label = "badge-down", "貼近今日低點"
-        otc_gauge_html = _build_score_gauge_html(otc_score100, 100, 60)
-        otc_block_html = f"""
-        <div style="margin-top:1rem; padding-top:0.8rem; border-top:1px solid rgba(255,255,255,0.08);">
-            <div class="quote-symbol" style="font-size:0.85rem;">🎯 櫃買指數即時位階(現在進行式)</div>
-            <div class="quote-price-row">
-                <div class="quote-badge {otc_badge_class}">{otc_label}</div>
-                <div style="font-size:0.8rem; color:#8b93a7;">{otc_position['detail']}</div>
-            </div>
-            {otc_gauge_html}
-        </div>
-        """
-    else:
-        otc_block_html = (
-            '<div style="margin-top:1rem; padding-top:0.8rem; border-top:1px solid rgba(255,255,255,0.08); '
-            'color:#8b93a7; font-size:0.85rem;">🎯 櫃買指數即時位階:資料暫時無法取得</div>'
+    # 昨日收盤位階——單看今天容易誤判(例如今天才剛開高,還看不出是不是要急殺),多比對
+    # 「昨天收盤時,自己是貼近當天高點還是低點」,才看得出是不是連續好幾天高檔盤堅後才急殺
+    # 這種型態。用 fetch_data.get_tpex_otc_index_previous_day() 拿昨天的完整OHLC,包成
+    # 跟即時報價相容的dict格式,直接複用 intraday.signal_range_position() 算法一致不用
+    # 另外寫一份。
+    try:
+        otc_prev = get_tpex_otc_index_previous_day()
+    except Exception:
+        otc_prev = None
+    otc_prev_position = (
+        intraday.signal_range_position(
+            {"day_high": otc_prev["high"], "day_low": otc_prev["low"], "last_price": otc_prev["close"]}
         )
+        if otc_prev
+        else {"available": False}
+    )
+
+    if otc_position.get("available"):
+        otc_score100 = round(otc_position["value"] * 100)
+        otc_badge_class, otc_label = _otc_position_badge(otc_score100)
+        otc_gauge_html = _build_score_gauge_html(otc_score100, 100, 60)
+        today_row_html = (
+            f'<div class="quote-price-row"><div class="quote-badge {otc_badge_class}">今日 {otc_label}</div>'
+            f'<div style="font-size:0.8rem; color:#8b93a7;">{otc_position["detail"]}</div></div>'
+            f"{otc_gauge_html}"
+        )
+    else:
+        today_row_html = '<div style="color:#8b93a7; font-size:0.85rem;">今日資料暫時無法取得</div>'
+
+    if otc_prev_position.get("available"):
+        prev_score100 = round(otc_prev_position["value"] * 100)
+        _, prev_label = _otc_position_badge(prev_score100)
+        prev_date_str = f"{otc_prev['date'][:4]}/{otc_prev['date'][4:6]}/{otc_prev['date'][6:]}"
+        prev_row_html = (
+            f'<div style="margin-top:0.5rem; font-size:0.78rem; color:#8b93a7;">'
+            f"📅 昨日({prev_date_str})收盤位階:{prev_label}({prev_score100:+d}) · "
+            f"收{otc_prev['close']:,.2f}(高{otc_prev['high']:,.2f}/低{otc_prev['low']:,.2f})</div>"
+        )
+    else:
+        prev_row_html = '<div style="margin-top:0.5rem; font-size:0.78rem; color:#8b93a7;">📅 昨日收盤位階:資料暫時無法取得</div>'
+
+    otc_block_html = (
+        '<div style="margin-top:1rem; padding-top:0.8rem; border-top:1px solid rgba(255,255,255,0.08);">'
+        '<div class="quote-symbol" style="font-size:0.85rem;">🎯 櫃買指數位階(今日即時 vs 昨日收盤)</div>'
+        f"{today_row_html}{prev_row_html}</div>"
+    )
 
     st.markdown(
         f"""
@@ -864,11 +899,13 @@ if us_signal:
         "顏色深淺=強弱、紅漲綠跌(hover可看細節)。純觀察參考,不是下單訊號。"
     )
     st.caption(
-        "🎯 櫃買指數即時位階:現價在「今天」高低區間的哪個位置(貼近高點/低點,不是漲跌幅),"
-        "資料來源跟盤中急殺警示一樣是TWSE即時報價,每次頁面重新整理就會更新。放在這裡是因為"
-        "櫃買指數電子/半導體權重高,常跟那斯達克期貨連動——可以直接對照「美股夜盤預測的方向」"
-        "有沒有跟「櫃買現在實際走勢」背離,例如美股預測偏多但這裡已經滑到偏下半區,可能代表"
-        "盤中氣氛在轉弱。純觀察參考,不是下單訊號,交易時段外(非09:00-13:45)資料是最後一筆。"
+        "🎯 櫃買指數位階:「今日」是現價在今天高低區間的哪個位置(TWSE即時報價,每次頁面"
+        "重新整理就會更新);「昨日」是上一個完整交易日收盤時,自己收在當天區間的哪個位置"
+        "(TPEx官方每日行情)——兩個一起看才看得出是不是連續好幾天高檔盤堅後才急殺,不是只看"
+        "今天一天。放在這裡是因為櫃買指數電子/半導體權重高,常跟那斯達克期貨連動——可以直接"
+        "對照「美股夜盤預測的方向」有沒有跟「櫃買實際走勢」背離,例如美股預測偏多但這裡已經"
+        "滑到偏下半區,可能代表盤中氣氛在轉弱。純觀察參考,不是下單訊號,交易時段外"
+        "(非09:00-13:45)今日資料是最後一筆。"
     )
 else:
     st.warning("美股夜盤資料抓取失敗,暫時無法顯示連動指標。")

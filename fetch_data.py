@@ -5,12 +5,16 @@
 """
 
 import time
+from datetime import datetime
 from io import StringIO
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import requests
 import yfinance as yf
 import pandas as pd
+
+_TAIPEI_TZ = ZoneInfo("Asia/Taipei")
 
 # yfinance 的 info["longName"] 對台股只有英文全名,沒有中文——中文簡稱改用 TWSE 公開的
 # ISIN 一覽表(上市/上櫃分開兩個頁面),這是慣用的台股代號->中文名稱對照公開來源,不用驗證碼。
@@ -83,6 +87,47 @@ def get_tpex_otc_index_quote() -> dict | None:
             "day_low": float(latest["Low"]),
             "volume": None,
             "asof": latest["Date"],
+        }
+    except (KeyError, ValueError):
+        return None
+
+
+def get_tpex_otc_index_previous_day() -> dict | None:
+    """回傳櫃買指數「上一個完整交易日」的OHLC(不是今天),用來跟今天的即時位階比較——
+    昨天收盤時自己是貼近高點還是低點,才看得出「連續好幾天高檔急殺」這種型態,不是只看
+    今天一天。
+
+    跟 get_tpex_otc_index_quote() 共用同一個TPEx端點,但這個端點的docstring說是「每日
+    更新的收盤行情」——盤中今天還沒收盤時,資料最後一筆可能還是昨天(還沒把今天加進去);
+    收盤後資料更新了,最後一筆才會變成今天。所以不能總是假設「最後一筆是今天、倒數第二筆
+    是昨天」,要先用日期字串比對「今天在不在清單裡」,今天不在清單裡代表最後一筆本身就是
+    「上一個完整交易日」=昨天,今天在清單裡才要往前一筆。
+    """
+    try:
+        resp = requests.get(TPEX_INDEX_URL, headers=HEADERS, timeout=15)
+        data = resp.json()
+    except Exception:
+        return None
+    if not data:
+        return None
+
+    today_str = datetime.now(_TAIPEI_TZ).strftime("%Y%m%d")
+    dates = [d.get("Date") for d in data]
+    if today_str in dates:
+        idx = dates.index(today_str)
+        if idx == 0:
+            return None  # 這個月第一筆交易日,沒有再往前的資料可以當「昨天」
+        prev = data[idx - 1]
+    else:
+        prev = data[-1]  # 今天還沒收盤入帳,最後一筆本身就是最近一個完整交易日
+
+    try:
+        return {
+            "date": prev["Date"],
+            "open": float(prev["Open"]),
+            "high": float(prev["High"]),
+            "low": float(prev["Low"]),
+            "close": float(prev["Close"]),
         }
     except (KeyError, ValueError):
         return None
