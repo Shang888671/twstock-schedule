@@ -230,7 +230,22 @@ def get_tx_live_quote() -> dict | None:
 
 
 PACE_MIN_ELAPSED_MINUTES = 15  # 剛開盤沒多久,步調比較(pace_ratio)波動太大不具參考性,先不給分數
-PACE_SCORE_SCALE = 50  # pace_ratio=1.0(正常步調)對應50分,分數映射見 compute_live_participation_score()
+PACE_SCORE_SCALE = 50  # ratio=1.0(正常步調)對應50分,分數映射見 ratio_to_score100()
+
+
+def ratio_to_score100(ratio: float | None) -> int | None:
+    """把「量能比 vs 正常」的比值換算成 0~100 單向強度分數——共用同一套映射,讓「盤中
+    即時評分」(compute_live_participation_score 的 pace_ratio)跟「昨晚結算後的最終
+    評分」(compute_night_session_strength 的 ratio,是完整一夜量能對比近20夜均量,
+    不是步調比較)可以放在同一個0~100分數尺度上直接比較——雖然兩者比較基準不同(一個是
+    步調基準、一個是完整一夜均量),但「1.0=正常、2.0以上=極熱絡、0=無量」這個相對感覺
+    是一致的,分數才有意義互相對照。
+
+    ratio=1.0->50分,ratio>=2.0->100分封頂,ratio=0->0分,None(資料不足)->None。
+    """
+    if ratio is None:
+        return None
+    return round(max(0.0, min(100.0, ratio * PACE_SCORE_SCALE)))
 
 
 def compute_live_participation_score(lookback_days: int = LOOKBACK_DAYS_DEFAULT) -> dict:
@@ -287,7 +302,7 @@ def compute_live_participation_score(lookback_days: int = LOOKBACK_DAYS_DEFAULT)
         return {"available": False, "reason": "insufficient"}
     pace_ratio = live["volume"] / expected_volume
 
-    score100 = round(max(0.0, min(100.0, pace_ratio * PACE_SCORE_SCALE)))
+    score100 = ratio_to_score100(pace_ratio)
     if pace_ratio >= STRENGTH_STRONG_RATIO:
         label = "熱絡"
     elif pace_ratio <= STRENGTH_WEAK_RATIO:

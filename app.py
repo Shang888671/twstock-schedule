@@ -1021,10 +1021,26 @@ if night_signal:
             f"{p_gauge_html}</div>"
         )
     elif live_participation.get("reason") == "closed":
-        live_block_html = (
-            '<div style="margin-top:1rem; padding-top:0.8rem; border-top:1px solid rgba(255,255,255,0.08); '
-            'color:#8b93a7; font-size:0.85rem;">⚡ 目前非夜盤時段(15:00~次日05:00),即時參與度評分暫不顯示。</div>'
-        )
+        # 現在不在夜盤時段,不代表使用者不想看評分——「上一個已結束的夜盤」最終評分還是有
+        # 參考價值(比照櫃買指數位階卡片「今日/昨日」兩段式呈現的既有設計:不是有資料才顯示、
+        # 沒資料就整段消失,而是永遠有東西可以看)。用同一套 ratio_to_score100() 換算,
+        # 才能跟即時評分放在同一個0~100尺度上直接比較。
+        last_night_score = night_session.ratio_to_score100(night_signal["ratio"])
+        if last_night_score is not None:
+            ln_color = "#f97316" if last_night_score >= 75 else ("#38bdf8" if last_night_score <= 25 else "#9ca3af")
+            live_block_html = (
+                '<div style="margin-top:1rem; padding-top:0.8rem; border-top:1px solid rgba(255,255,255,0.08);">'
+                f'<div class="quote-symbol" style="font-size:0.85rem;">📅 昨晚({night_signal["date"]})最終評分(收盤結算,非步調比較)</div>'
+                f'<div class="quote-price-row"><div class="quote-price" style="font-size:2.4rem; color:{ln_color};">{last_night_score}</div>'
+                f'<div class="quote-badge badge-flat">{strength_text}</div></div>'
+                f"{_build_participation_gauge_html(last_night_score)}"
+                '<div style="font-size:0.78rem; color:#8b93a7; margin-top:0.4rem;">今晚15:00開盤後這裡會換成盤中即時評分。</div></div>'
+            )
+        else:
+            live_block_html = (
+                '<div style="margin-top:1rem; padding-top:0.8rem; border-top:1px solid rgba(255,255,255,0.08); '
+                'color:#8b93a7; font-size:0.85rem;">⚡ 目前非夜盤時段(15:00~次日05:00),昨晚資料不足無法評分。</div>'
+            )
     else:
         live_block_html = (
             '<div style="margin-top:1rem; padding-top:0.8rem; border-top:1px solid rgba(255,255,255,0.08); '
@@ -1061,7 +1077,9 @@ if night_signal:
         "正常應該累積多少(用近20夜均量乘上目前經過時間佔全部夜盤時段的比例當基準)」的步調"
         "比較,50分=正常步調,100分封頂=至少2倍熱絡,0分=還沒成交。這是假設量能均勻分佈在整個"
         "夜盤時段的簡化假設,開盤前段/尾盤實際通常比半夜熱絡,算出來的比值在時段頭尾會有系統性"
-        "偏差,當粗略參考就好。一樣不判斷多空方向,純觀察參考,不是下單訊號。"
+        "偏差,當粗略參考就好。非夜盤時段這裡會改顯示「上一個已結束夜盤」的最終評分(完整一夜"
+        "量能比對近20夜均量,不是步調比較,兩者計算基準不同但共用同一套0~100分數尺度方便比較),"
+        "不會整段消失沒東西看。一樣不判斷多空方向,純觀察參考,不是下單訊號。"
     )
 else:
     st.info("台指期夜盤資料暫時無法取得或還在累積中。")
