@@ -151,10 +151,18 @@ def get_intraday_quote(code: str, otc: bool = False) -> dict | None:
     bid_volumes = _parse_depth(raw, "g")
     ask_volumes = _parse_depth(raw, "f")
 
+    # 頂層的 "z"(最後成交價)常常在兩筆成交之間的空檔是"-"(還沒等到下一筆成交更新這個
+    # 欄位),但巢狀的 "trade" 物件(例如 {"t":"13:21:50","v":1,"z":"2420.0000"})這時候
+    # 通常還留著「上一筆真的成交」的價格跟時間——實測台積電盤中用這個當退路,比直接回傳
+    # None(害呼叫端誤以為抓不到資料、整段降級成yfinance延遲報價)更接近真正即時。
+    last_price = _parse_float(raw, "z")
+    if last_price is None:
+        last_price = _parse_float(raw.get("trade") or {}, "z")
+
     return {
         "symbol": raw.get("ch", ex_ch),
         "name": raw.get("n"),
-        "last_price": _parse_float(raw, "z"),
+        "last_price": last_price,
         "open": _parse_float(raw, "o"),
         "day_high": _parse_float(raw, "h"),
         "day_low": _parse_float(raw, "l"),
