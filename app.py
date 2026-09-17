@@ -975,16 +975,25 @@ if night_signal:
     strength = night_signal["strength"]
     strength_emoji = {"熱絡": "🔥", "普通": "➖", "清淡": "💤"}.get(strength, "❔")
     strength_text = f"{strength_emoji} {strength}" if strength else "資料不足"
-    ratio_str = f"(量能比 {night_signal['ratio']:.2f}倍・評分{night_signal['long_score100']})" if night_signal["ratio"] is not None else ""
+    # 用 .get() 不要直接 [key]——st.cache_data 包的 load_night_session_strength() 換過
+    # 回傳格式(新增 long_score100/short_* 這幾個key)後,實測發現 Streamlit Cloud 部署時
+    # 沒有整個重啟process、殘留了改版前的舊快取字典,直接用[key]取新欄位會直接 KeyError
+    # 讓整頁掛掉。改用.get()至少能優雅降級(這次的新增資訊先不顯示,不影響其他既有內容),
+    # 不會讓一個新欄位的快取結構不匹配拖垮整張卡片。
+    # long_score100 是 ratio 的純函式,即使快取字典是改版前的舊格式(沒有這個key)也能就地
+    # 重算,不用整個等 .get() 落空就放棄顯示——ratio 這個欄位從最早版本就存在,舊快取一定有。
+    long_score100 = night_signal.get("long_score100", night_session.ratio_to_score100(night_signal["ratio"]))
+    score_suffix = f"・評分{long_score100}" if long_score100 is not None else ""
+    ratio_str = f"(量能比 {night_signal['ratio']:.2f}倍{score_suffix})" if night_signal["ratio"] is not None else ""
 
     # 近3夜短期比較——使用者要求「量能比可以做個評分跟前三天比較」,近20夜均量反應比較慢,
     # 跟這幾天比才看得出是不是剛開始轉熱/轉冷,兩個時間窗一起看比單看20夜全面(見
     # night_session.compute_night_session_strength() 的方法說明)。
-    if night_signal["short_ratio"] is not None:
-        short_emoji = {"熱絡": "🔥", "普通": "➖", "清淡": "💤"}.get(night_signal["short_strength"], "❔")
+    if night_signal.get("short_ratio") is not None:
+        short_emoji = {"熱絡": "🔥", "普通": "➖", "清淡": "💤"}.get(night_signal.get("short_strength"), "❔")
         short_badge_str = (
-            f"{short_emoji} 近{night_signal['short_window_days']}夜{night_signal['short_strength']}"
-            f"(量能比{night_signal['short_ratio']:.2f}倍・評分{night_signal['short_score100']})"
+            f"{short_emoji} 近{night_signal.get('short_window_days')}夜{night_signal.get('short_strength')}"
+            f"(量能比{night_signal['short_ratio']:.2f}倍・評分{night_signal.get('short_score100')})"
         )
     else:
         short_badge_str = None
@@ -1035,14 +1044,16 @@ if night_signal:
     elif live_participation.get("reason") == "closed":
         # 現在不在夜盤時段,不代表使用者不想看評分——「上一個已結束的夜盤」最終評分還是有
         # 參考價值(比照櫃買指數位階卡片「今日/昨日」兩段式呈現的既有設計:不是有資料才顯示、
-        # 沒資料就整段消失,而是永遠有東西可以看)。直接沿用 night_signal 已經算好的
-        # long_score100/short_score100,不用重算,才能跟即時評分放在同一個0~100尺度上比較。
-        last_night_score = night_signal["long_score100"]
+        # 沒資料就整段消失,而是永遠有東西可以看)。優先沿用 night_signal 已經算好的
+        # long_score100,拿不到(舊快取字典沒有這個key)才就地用 ratio 重算,見上面 ratio_str
+        # 那邊同樣的 .get() 容錯理由。
+        last_night_score = long_score100
         if last_night_score is not None:
             ln_color = "#f97316" if last_night_score >= 75 else ("#38bdf8" if last_night_score <= 25 else "#9ca3af")
+            short_score100 = night_signal.get("short_score100")
             short_score_note = (
-                f'近{night_signal["short_window_days"]}夜評分{night_signal["short_score100"]}({night_signal["short_strength"]})・'
-                if night_signal["short_score100"] is not None
+                f'近{night_signal.get("short_window_days")}夜評分{short_score100}({night_signal.get("short_strength")})・'
+                if short_score100 is not None
                 else ""
             )
             live_block_html = (
@@ -1065,10 +1076,11 @@ if night_signal:
         )
 
     short_badge_html = f'<div class="quote-badge badge-flat">{short_badge_str}</div>' if short_badge_str else ""
+    short_avg_volume = night_signal.get("short_avg_volume")
     short_stat_html = (
-        f'<div class="stat-item"><div class="label">近{night_signal["short_window_days"]}夜均量</div>'
-        f'<div class="value">{night_signal["short_avg_volume"]:,.0f} 口</div></div>'
-        if night_signal["short_avg_volume"] is not None
+        f'<div class="stat-item"><div class="label">近{night_signal.get("short_window_days")}夜均量</div>'
+        f'<div class="value">{short_avg_volume:,.0f} 口</div></div>'
+        if short_avg_volume is not None
         else ""
     )
 
