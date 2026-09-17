@@ -18,6 +18,11 @@
 TELEGRAM_BOT_TOKEN = "在這裡貼上你的Bot Token"
 TELEGRAM_CHAT_ID = "在這裡貼上你的Chat ID"
 
+# 盤中警示開啟/關閉的總開關——改成 False 存檔後,alert_monitor.py(如果已經在背景執行)
+# 最多等 PAUSED_CHECK_SECONDS(30秒)就會自動偵測到並暫停,不用重開腳本;改回 True
+# 也一樣自動恢復。想臨時關掉推播(例如開會、不想被打擾)又不想把WATCH_LIST清單刪掉重打時用。
+ALERT_ENABLED = True
+
 # 想監控的標的清單,otc=False是上市股票/加權指數,otc=True是上櫃股票/櫃買指數。
 # code 是股票代號,或加權指數用固定代號"t00"、櫃買指數用固定代號"o00"(這兩個是TWSE MIS
 # 對指數的代號,不是股票代號,細節見 app.py 裡「mis_code」相關的說明)。

@@ -16,8 +16,13 @@ TWSE MIS,偵測到警示升級時透過 Telegram Bot 主動推播到手機。
 2. 執行 `python alert_monitor.py`,讓終端機視窗開著跑(要離開電腦時也可以留著,只要
    電腦不關機/不休眠;真的要做到電腦關著也能跑,得另外部署到一台24小時開著的機器,
    這次先不做到那麼遠)。Ctrl+C 結束。
+
+想暫時關掉推播(不想整支腳本停掉重開)時,把 alert_config.py 的 ALERT_ENABLED 改成
+False 存檔就好——腳本會在下一輪(最多 PAUSED_CHECK_SECONDS 秒後)自動偵測到並暫停,
+改回 True 也會自動恢復,不用重新執行這支腳本。
 """
 
+import importlib
 import time
 from collections import deque
 from datetime import datetime
@@ -39,6 +44,9 @@ POLL_INTERVAL_SECONDS = 15  # 交易時間內多久打一次API——比app.py�
                             # 跑要對TWSE MIS客氣一點,不用跟畫面互動所以差5秒感受不到差異。
 CLOSED_MARKET_CHECK_SECONDS = 300  # 非交易時間多久檢查一次「開盤了沒」,不用一直打
 HISTORY_MAXLEN = 20  # 20筆*15秒=300秒,跟 reversal_alert.FAST_DROP_WINDOW_SECONDS 對齊
+PAUSED_CHECK_SECONDS = 30  # ALERT_ENABLED=False(暫停監控)時多久重新檢查一次設定檔,
+                           # 比CLOSED_MARKET_CHECK_SECONDS短是因為「暫停」通常是使用者
+                           # 臨時想關掉一下,不像非交易時段那樣可以放心等很久。
 RENOTIFY_COOLDOWN_SECONDS = 300  # 同一個標的維持在同一個警示等級時,最多幾秒才重複提醒
                                  # 一次,避免「急殺」持續好幾分鐘時每15秒轟炸一次手機
 
@@ -114,8 +122,33 @@ def main() -> None:
     print(f"開始監控:{labels}(Ctrl+C 結束)")
     send_telegram_message(f"🟢 盤中急殺警示監控已啟動,監控標的:{labels}")
 
+    # 記錄「上一輪看到的ALERT_ENABLED」,只在狀態真的改變(開→關、關→開)時才推播通知,
+    # 不然每次迴圈都重複發同一句「已暫停」訊息。用 getattr 給預設值True,是因為使用者
+    # 可能是從舊版alert_config.py升級上來、還沒加這個欄位,不應該因此直接壞掉。
+    last_enabled_state = True
+
     try:
         while True:
+            # 每輪都重新載入 alert_config.py,讓使用者存檔修改 ALERT_ENABLED 之後,
+            # 不用重開這支腳本、下一輪(最多PAUSED_CHECK_SECONDS或POLL_INTERVAL_SECONDS秒
+            # 之後)就會生效——這也是為什麼WATCH_LIST在main()一開始就先讀死了一份,
+            # 這裡reload不會讓「監控標的清單」跟著動態變動,只有ALERT_ENABLED這個開關
+            # 是刻意設計成可以immediately生效的。
+            importlib.reload(alert_config)
+            alert_enabled = getattr(alert_config, "ALERT_ENABLED", True)
+
+            if alert_enabled != last_enabled_state:
+                if alert_enabled:
+                    send_telegram_message("🟢 盤中急殺警示監控已恢復")
+                else:
+                    send_telegram_message("🟡 盤中急殺警示監控已暫停(alert_config.py的ALERT_ENABLED=False)")
+                last_enabled_state = alert_enabled
+
+            if not alert_enabled:
+                print(f"[{_now_str()}] 監控已暫停,{PAUSED_CHECK_SECONDS}秒後重新檢查設定")
+                time.sleep(PAUSED_CHECK_SECONDS)
+                continue
+
             if intraday.is_market_open_now():
                 for target in alert_config.WATCH_LIST:
                     _check_one(target, states[target["label"]])
