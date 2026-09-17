@@ -112,6 +112,12 @@ st.markdown(CSS, unsafe_allow_html=True)
 
 AUTO_REFRESH_SECONDS = 60
 
+# 這次腳本執行「開始前」記錄的上一次執行時間——不管上次是使用者互動、計時器、還是任何其他
+# 原因觸發的重跑都算。用意見下面 _auto_refresh_tick() 的說明(側邊欄「⚙️盤中急殺警示設定」
+# 數值卡住的成因)。每次都無條件更新,不受任何條件影響。
+_prev_script_run_time = st.session_state.get("_last_script_run_time", 0)
+st.session_state["_last_script_run_time"] = time_module.time()
+
 
 @st.fragment(run_every=AUTO_REFRESH_SECONDS)
 def _auto_refresh_tick():
@@ -124,10 +130,18 @@ def _auto_refresh_tick():
     用 session_state 記錄上次真的觸發 rerun 的時間點,靠這個判斷「這次呼叫是不是計時器到期
     才觸發的」——如果不這樣擋,這個 function 每次被呼叫(包括使用者互動造成的全頁重跑,
     或這個 function 自己呼叫 st.rerun() 之後緊接著的那次重跑)都會無條件立刻再呼叫一次
-    st.rerun(),變成無窮迴圈(第一版就是這樣寫,結果整頁卡死變空白,一直重跑出不去)。"""
+    st.rerun(),變成無窮迴圈(第一版就是這樣寫,結果整頁卡死變空白,一直重跑出不去)。
+
+    另外加一個「距離上一次不管什麼原因觸發的重跑」門檻(_prev_script_run_time)——原本只看
+    「距離上次計時器自己觸發的重跑」,沒考慮到使用者互動(例如編輯側邊欄「盤中急殺警示設定」
+    的門檻數字)本身也是一次全頁重跑。實測發現:如果計時器的60秒倒數剛好跟使用者才送出的
+    編輯前後腳到,兩個重跑會搶著執行,可能導致使用者剛打好的新門檻值被計時器這次重跑蓋掉
+    (用到的還是編輯生效前的舊值)——畫面上數字看起來有改,但警示文字/換算股價卻沒有跟著
+    新數字重新判斷,就是使用者回報的「設定錯誤跳出警示後,數值會卡住」。多這道門檻確保計時器
+    重跑跟其他任何重跑之間至少間隔5秒,不會搶在使用者編輯還沒穩定生效前硬插進來。"""
     now = time_module.time()
     last = st.session_state.get("_auto_refresh_last_tick", 0)
-    if now - last >= AUTO_REFRESH_SECONDS:
+    if now - last >= AUTO_REFRESH_SECONDS and now - _prev_script_run_time >= 5:
         st.session_state["_auto_refresh_last_tick"] = now
         st.rerun()
 
@@ -186,10 +200,19 @@ with st.sidebar:
             "急殺警示門檻(%,近5分鐘變動)", min_value=0.1, max_value=10.0,
             value=reversal_alert.FAST_DROP_SEVERE_PCT, step=0.1, disabled=not enable_reversal_alert,
         )
+        # 用 st.empty() 佔位再每次重跑都明確寫入/清空,不要單純寫「if 條件: st.warning(...)」——
+        # 實測發現這種寫法在使用者把門檻設定「錯誤→改對→改回錯誤」來回切換時,第二次進入
+        # 錯誤狀態時警示文字不會重新跳出來(卡住),要用 st.empty() 佔位子每次都強制整個替換
+        # 內容才會穩定重新顯示。
+        threshold_warning_slot = st.empty()
         if enable_reversal_alert and custom_pullback_severe_pct < custom_pullback_warn_pct:
-            st.warning("急殺門檻比拉回門檻還小,「拉回」這個中間等級實際上不會出現,"
-                       "拉回超過拉回門檻就會直接跳成急殺——如果不是故意的,建議急殺門檻"
-                       "設得比拉回門檻大。")
+            threshold_warning_slot.warning(
+                "急殺門檻比拉回門檻還小,「拉回」這個中間等級實際上不會出現,"
+                "拉回超過拉回門檻就會直接跳成急殺——如果不是故意的,建議急殺門檻"
+                "設得比拉回門檻大。"
+            )
+        else:
+            threshold_warning_slot.empty()
 
         if enable_reversal_alert:
             # 上面兩個number_input只有調完按Enter/失焦才會觸發rerun,不會邊打邊即時換算——
