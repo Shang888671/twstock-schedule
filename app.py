@@ -175,6 +175,21 @@ with st.sidebar:
                        "拉回超過拉回門檻就會直接跳成急殺——如果不是故意的,建議急殺門檻"
                        "設得比拉回門檻大。")
 
+        # 上面兩個number_input只有調完按Enter/失焦才會觸發rerun,不會邊打邊即時換算——
+        # 這裡改用「這檔標的上一次成功抓到的今日高點」(存在session_state,下面報價區塊
+        # 每次抓到新資料就會更新)換算成價格,直接顯示在設定區塊裡,不用捲到下面的警示卡片
+        # 才看得到對應股價。第一次查詢這檔標的、還沒有任何快取時顯示提示文字而不是報錯。
+        _preview_code = code if query_mode == "個股" else ("^TWII" if query_mode == "加權指數" else "^TWOII")
+        _preview_day_high = st.session_state.get(f"_last_day_high_{_preview_code}")
+        if _preview_day_high:
+            st.caption(
+                f"換算參考(依上次查到的今日高點 {_preview_day_high:,.2f}):"
+                f"拉回門檻價 **{_preview_day_high * (1 - custom_pullback_warn_pct / 100):,.2f}**、"
+                f"急殺門檻價 **{_preview_day_high * (1 - custom_pullback_severe_pct / 100):,.2f}**"
+            )
+        else:
+            st.caption("這檔標的還沒有查過資料,查詢一次之後這裡會顯示換算股價參考。")
+
     st.divider()
 
     # 雲端部署版本沒有本機的 xq_branch_data/(.dsl/CSV 個人資料被 .gitignore 排除,不會上傳
@@ -671,6 +686,11 @@ try:
 except Exception as e:
     st.error(f"抓取報價失敗:{e}")
     st.stop()
+
+# 存起來給側邊欄「⚙️急殺警示門檻設定」的換算價格預覽用(見該區塊的說明)——每次成功抓到
+# 報價就更新,不管這次是走 MIS 即時還是退回 yfinance/TPEx,只要有 day_high 就存。
+if quote.get("day_high"):
+    st.session_state[f"_last_day_high_{code}"] = quote["day_high"]
 
 # 指數不是個股,查不到 TWSE ISIN 中文簡稱,yfinance 的 longName 也是亂碼代號(例如
 # "^TWOII,113497,928500"),直接用固定的顯示名稱,不走 load_name() 那套查詢股票的邏輯。
