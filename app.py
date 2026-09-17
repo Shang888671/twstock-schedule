@@ -847,8 +847,13 @@ if us_signal:
         otc_score100 = round(otc_position["value"] * 100)
         otc_badge_class, otc_label = _otc_position_badge(otc_score100)
         otc_gauge_html = _build_score_gauge_html(otc_score100, 100, 60)
+        # 使用者想要「一眼看分數就能判斷」,不用逐字看badge文字——直接沿用主報價卡
+        # quote-price那個3rem大字級,+100~-100直接當分數看,顏色比照紅漲綠跌(貼近高點偏紅、
+        # 貼近低點偏綠),0分用中性灰。
+        otc_score_color = "var(--tw-up)" if otc_score100 > 0 else ("var(--tw-down)" if otc_score100 < 0 else "#9ca3af")
         today_row_html = (
-            f'<div class="quote-price-row"><div class="quote-badge {otc_badge_class}">今日 {otc_label}</div>'
+            f'<div class="quote-price-row"><div class="quote-price" style="font-size:2.4rem; color:{otc_score_color};">{otc_score100:+d}</div>'
+            f'<div class="quote-badge {otc_badge_class}">今日 {otc_label}</div>'
             f'<div style="font-size:0.8rem; color:#8b93a7;">{otc_position["detail"]}</div></div>'
             f"{otc_gauge_html}"
         )
