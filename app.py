@@ -265,7 +265,8 @@ def load_name(code, otc):
     return f"{english_name}({chinese_name})" if chinese_name else english_name
 
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=60)  # 對齊AUTO_REFRESH_SECONDS(60秒)——使用者要看漲跌判斷,K線/均線/
+                        # 支撐阻力這些跟著自動刷新一起變新,不要卡在舊的5分鐘快取裡沒更新
 def load_history_with_indicators(code, period, otc):
     hist = get_history(code, period=period, otc=otc)
     return add_indicators(hist)
