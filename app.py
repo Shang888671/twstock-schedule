@@ -100,9 +100,39 @@ html, body, [class*="css"] {
 """
 st.markdown(CSS, unsafe_allow_html=True)
 
+
+AUTO_REFRESH_SECONDS = 60
+
+
+@st.fragment(run_every=AUTO_REFRESH_SECONDS)
+def _auto_refresh_tick():
+    """純計時器,不畫任何東西——每60秒觸發一次 st.rerun()(預設 scope="app",整頁重跑,
+    不是只重跑這個 fragment 自己),讓各區塊的 st.cache_data 過期後能盡快自動撈到新資料,
+    不用使用者手動重新整理瀏覽器。60秒間隔選這個數字是因為大部分快取TTL是300秒(5分鐘)、
+    夜盤是1800秒——刷新得比TTL短很多也拿不到新資料,只是白白重繪整頁;60秒是「感覺得到
+    在動、又不浪費」的折衷點。
+
+    用 session_state 記錄上次真的觸發 rerun 的時間點,靠這個判斷「這次呼叫是不是計時器到期
+    才觸發的」——如果不這樣擋,這個 function 每次被呼叫(包括使用者互動造成的全頁重跑,
+    或這個 function 自己呼叫 st.rerun() 之後緊接著的那次重跑)都會無條件立刻再呼叫一次
+    st.rerun(),變成無窮迴圈(第一版就是這樣寫,結果整頁卡死變空白,一直重跑出不去)。"""
+    now = time_module.time()
+    last = st.session_state.get("_auto_refresh_last_tick", 0)
+    if now - last >= AUTO_REFRESH_SECONDS:
+        st.session_state["_auto_refresh_last_tick"] = now
+        st.rerun()
+
+
 with st.sidebar:
     st.markdown("### 📈 台股查詢模型")
     st.caption("即時報價・技術指標・做多訊號")
+    st.divider()
+    auto_refresh = st.checkbox("🔄 自動刷新(每60秒)", value=True,
+                                help="每60秒自動重新整理頁面。各區塊資料實際更新頻率仍取決於"
+                                     "各自的快取有效期(大部分5分鐘,夜盤30分鐘),這個開關只是"
+                                     "確保快取過期後不用手動重整就能盡快看到新資料。")
+    if auto_refresh:
+        _auto_refresh_tick()
     st.divider()
     query_mode = st.radio("查詢標的", ["個股", "加權指數", "櫃買指數"], horizontal=True)
     if query_mode == "個股":
