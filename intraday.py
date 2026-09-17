@@ -179,7 +179,11 @@ def _clip(x: float, lo: float = -1.0, hi: float = 1.0) -> float:
     return max(lo, min(hi, x))
 
 
-def _signal_range_position(quote: dict) -> dict:
+def signal_range_position(quote: dict) -> dict:
+    """今日高低區間位階:價格貼近今天高點時+1,貼近低點時-1,正中間是0——不只是個股5訊號
+    卡的其中一項,也直接拿來當櫃買指數的即時位階燈號用(見 app.py 美股夜盤連動指標卡片),
+    所以特地不加底線,當成模組對外的公開函式。
+    """
     high, low, price = quote.get("day_high"), quote.get("day_low"), quote.get("last_price")
     if high is None or low is None or price is None or high <= low:
         return {"available": False, "value": None, "detail": "當日高低區間資料不足"}
@@ -256,7 +260,7 @@ def compute_intraday_strength(
     (兩者資料完全不足時都是 None)。
     """
     signals = {
-        "range_position": _signal_range_position(quote),
+        "range_position": signal_range_position(quote),
         "open_momentum": _signal_open_momentum(quote),
         "volume_ratio": _signal_volume_ratio(quote, avg_daily_volume),
         "bid_ask_pressure": _signal_bid_ask_pressure(quote),

@@ -796,6 +796,48 @@ if us_signal:
     light_items = "".join(
         _us_light_html(label, us_signal[key]) for key, (_, label) in US_MARKET_SYMBOLS.items()
     )
+
+    # 櫃買指數即時位階——使用者親身經歷櫃買市場盤中從高點急殺,而櫃買指數(電子/半導體權重高)
+    # 跟那斯達克期貨連動性高,所以特地放進同一張卡片,方便直接對照「美股夜盤預測的方向」
+    # 跟「現在盤中實際走勢」。這是TWSE MIS即時資料(現在進行式),跟上面4個指標的yfinance
+    # 隔夜資料(已經發生、相對固定)是不同性質的東西,故意不混進同一個加權分數裡一起算,
+    # 分開呈現才不會互相稀釋各自的訊號意義。
+    try:
+        otc_quote = intraday.get_intraday_quote("o00", True)
+    except Exception:
+        otc_quote = None
+    otc_position = intraday.signal_range_position(otc_quote) if otc_quote else {"available": False}
+
+    if otc_position.get("available"):
+        otc_value = otc_position["value"]
+        otc_score100 = round(otc_value * 100)
+        if otc_score100 >= 60:
+            otc_badge_class, otc_label = "badge-up", "貼近今日高點"
+        elif otc_score100 > 0:
+            otc_badge_class, otc_label = "badge-up", "偏上半區"
+        elif otc_score100 == 0:
+            otc_badge_class, otc_label = "badge-flat", "區間中點"
+        elif otc_score100 > -60:
+            otc_badge_class, otc_label = "badge-down", "偏下半區"
+        else:
+            otc_badge_class, otc_label = "badge-down", "貼近今日低點"
+        otc_gauge_html = _build_score_gauge_html(otc_score100, 100, 60)
+        otc_block_html = f"""
+        <div style="margin-top:1rem; padding-top:0.8rem; border-top:1px solid rgba(255,255,255,0.08);">
+            <div class="quote-symbol" style="font-size:0.85rem;">🎯 櫃買指數即時位階(現在進行式)</div>
+            <div class="quote-price-row">
+                <div class="quote-badge {otc_badge_class}">{otc_label}</div>
+                <div style="font-size:0.8rem; color:#8b93a7;">{otc_position['detail']}</div>
+            </div>
+            {otc_gauge_html}
+        </div>
+        """
+    else:
+        otc_block_html = (
+            '<div style="margin-top:1rem; padding-top:0.8rem; border-top:1px solid rgba(255,255,255,0.08); '
+            'color:#8b93a7; font-size:0.85rem;">🎯 櫃買指數即時位階:資料暫時無法取得</div>'
+        )
+
     st.markdown(
         f"""
         <div class="quote-card">
@@ -808,6 +850,7 @@ if us_signal:
             <div class="stat-row">
                 {stat_items}
             </div>
+            {otc_block_html}
         </div>
         """,
         unsafe_allow_html=True,
@@ -819,6 +862,13 @@ if us_signal:
         f"後加總的多空分數,範圍 ±{SCORE_MAX},橫條顯示淨分離兩端滿分有多遠,越極端代表訊號"
         "越一致越強烈。badge旁邊4個燈號依序對應小道瓊期貨/那斯達克期貨/費半/台積電ADR,"
         "顏色深淺=強弱、紅漲綠跌(hover可看細節)。純觀察參考,不是下單訊號。"
+    )
+    st.caption(
+        "🎯 櫃買指數即時位階:現價在「今天」高低區間的哪個位置(貼近高點/低點,不是漲跌幅),"
+        "資料來源跟盤中急殺警示一樣是TWSE即時報價,每次頁面重新整理就會更新。放在這裡是因為"
+        "櫃買指數電子/半導體權重高,常跟那斯達克期貨連動——可以直接對照「美股夜盤預測的方向」"
+        "有沒有跟「櫃買現在實際走勢」背離,例如美股預測偏多但這裡已經滑到偏下半區,可能代表"
+        "盤中氣氛在轉弱。純觀察參考,不是下單訊號,交易時段外(非09:00-13:45)資料是最後一筆。"
     )
 else:
     st.warning("美股夜盤資料抓取失敗,暫時無法顯示連動指標。")
