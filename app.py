@@ -364,6 +364,28 @@ def _build_score_gauge_html(score, score_max, strong_threshold) -> str:
     )
 
 
+def _build_participation_gauge_html(score100: float) -> str:
+    """0~100 單向強度橫條,跟 _build_score_gauge_html() 的正負雙向設計不同——台指期夜盤
+    參與度只有「熱絡/清淡」的強度之分,沒有多空方向(見 night_session.py 的既有立場),
+    用雙向橫條(中間0分、兩端滿分)會誤導成「這是多空分數」,所以另外寫一個單向版本。
+    刻度25/75取自 night_session.STRENGTH_WEAK_RATIO/STRENGTH_STRONG_RATIO 換算成分數
+    後的位置,跟「清淡/普通/熱絡」文字標籤的分界一致。"""
+    pct = max(0.0, min(100.0, score100))
+    color = "#f97316" if pct >= 75 else ("#38bdf8" if pct <= 25 else "#9ca3af")
+    ticks = [(0, "清淡0"), (25, "25"), (50, "普通50"), (75, "75"), (100, "熱絡100")]
+    ticks_html = "".join(f'<div style="position:absolute; left:{t}%; top:-3px; bottom:-3px; width:1px; background:rgba(255,255,255,{0.35 if t in (25, 75) else 0.18});"></div>' for t, _ in ticks)
+    labels_html = "".join(f'<span style="position:absolute; left:{t}%; transform:translateX({"0%" if t == 0 else ("-100%" if t == 100 else "-50%")}); white-space:nowrap;">{lbl}</span>' for t, lbl in ticks)
+    return (
+        '<div style="margin-top:0.8rem; max-width:360px;">'
+        '<div style="position:relative; height:8px; background:rgba(255,255,255,0.08); border-radius:4px;">'
+        f"{ticks_html}"
+        f'<div style="position:absolute; left:0%; width:{pct}%; top:0; bottom:0; background:{color}; border-radius:4px;"></div>'
+        "</div>"
+        f'<div style="position:relative; height:1rem; font-size:0.68rem; color:#6b7280; margin-top:3px;">{labels_html}</div>'
+        "</div>"
+    )
+
+
 def _render_reversal_banner(signal: dict) -> None:
     """盤中急殺/反轉警示(見 reversal_alert.py)的畫面呈現,個股跟指數(加權/櫃買)共用。
     永遠顯示(不是只在有警示時才出現),讓使用者能確認「這個監控目前是活的」,而不是
@@ -965,6 +987,50 @@ if night_signal:
     else:
         chg_badge_class, chg_str = "badge-flat", "▬ 0.00%"
 
+    # 即時參與度評分——使用者要求「跟櫃買市場一樣有即時監控的評分分數」,見
+    # night_session.compute_live_participation_score() 的方法說明(步調pace比較,
+    # 0~100單向強度分數,不是雙向多空分數)。不用 st.cache_data 包,每次重跑(頁面
+    # 自動刷新或使用者互動)都直接重打,才能反映「現在」的即時累積量能。
+    try:
+        live_participation = night_session.compute_live_participation_score()
+    except Exception:
+        live_participation = {"available": False, "reason": "insufficient"}
+
+    if live_participation.get("available"):
+        p_score = live_participation["score100"]
+        p_color = "#f97316" if p_score >= 75 else ("#38bdf8" if p_score <= 25 else "#9ca3af")
+        p_gauge_html = _build_participation_gauge_html(p_score)
+        p_chg = live_participation["change_pct"]
+        if p_chg is None:
+            p_chg_str = "—"
+        elif p_chg > 0:
+            p_chg_str = f"▲ {p_chg:+.2f}%"
+        elif p_chg < 0:
+            p_chg_str = f"▼ {p_chg:+.2f}%"
+        else:
+            p_chg_str = "▬ 0.00%"
+        p_price_str = f"{live_participation['last_price']:,.0f}" if live_participation["last_price"] is not None else "—"
+        live_block_html = (
+            '<div style="margin-top:1rem; padding-top:0.8rem; border-top:1px solid rgba(255,255,255,0.08);">'
+            '<div class="quote-symbol" style="font-size:0.85rem;">⚡ 夜盤即時參與度評分</div>'
+            f'<div class="quote-price-row"><div class="quote-price" style="font-size:2.4rem; color:{p_color};">{p_score}</div>'
+            f'<div class="quote-badge badge-flat">{live_participation["label"]}</div>'
+            f'<div style="font-size:0.8rem; color:#8b93a7;">{live_participation["symbol_id"]} {p_price_str} {p_chg_str}'
+            f'・累積{live_participation["live_volume"]:,}口(已開盤{live_participation["elapsed_minutes"]:.0f}分鐘,'
+            f'正常步調基準約{live_participation["expected_volume"]:,.0f}口)</div></div>'
+            f"{p_gauge_html}</div>"
+        )
+    elif live_participation.get("reason") == "closed":
+        live_block_html = (
+            '<div style="margin-top:1rem; padding-top:0.8rem; border-top:1px solid rgba(255,255,255,0.08); '
+            'color:#8b93a7; font-size:0.85rem;">⚡ 目前非夜盤時段(15:00~次日05:00),即時參與度評分暫不顯示。</div>'
+        )
+    else:
+        live_block_html = (
+            '<div style="margin-top:1rem; padding-top:0.8rem; border-top:1px solid rgba(255,255,255,0.08); '
+            'color:#8b93a7; font-size:0.85rem;">⚡ 夜盤剛開盤或即時資料暫時無法取得,評分還無法計算。</div>'
+        )
+
     st.markdown(
         f"""
         <div class="quote-card">
@@ -978,6 +1044,7 @@ if night_signal:
                 <div class="stat-item"><div class="label">近20日均量</div><div class="value">{night_signal['avg_volume']:,.0f} 口</div></div>
                 <div class="stat-item"><div class="label">資料日期</div><div class="value">{night_signal['date']}</div></div>
             </div>
+            {live_block_html}
         </div>
         """,
         unsafe_allow_html=True,
@@ -987,6 +1054,14 @@ if night_signal:
         "比值,反映的是台灣資金自己的參與度/信心強度,不是多空方向——量大只代表當晚交易熱絡、"
         "資金關注度高,不代表偏多或偏空。近月合約當晚漲跌%只是補充參考,不是這個指標的主體。"
         "純觀察參考,不是下單訊號。"
+    )
+    st.caption(
+        "⚡ 夜盤即時參與度評分:跟上面的量能比不同資料源(這裡是mis.taifex.com.tw即時報價,"
+        "隨盤中成交即時更新,頁面自動刷新就會跟著變動),分數是「目前累積量能」對比「這個時間點"
+        "正常應該累積多少(用近20夜均量乘上目前經過時間佔全部夜盤時段的比例當基準)」的步調"
+        "比較,50分=正常步調,100分封頂=至少2倍熱絡,0分=還沒成交。這是假設量能均勻分佈在整個"
+        "夜盤時段的簡化假設,開盤前段/尾盤實際通常比半夜熱絡,算出來的比值在時段頭尾會有系統性"
+        "偏差,當粗略參考就好。一樣不判斷多空方向,純觀察參考,不是下單訊號。"
     )
 else:
     st.info("台指期夜盤資料暫時無法取得或還在累積中。")

@@ -20,8 +20,10 @@
 
 import re
 import time
+from datetime import datetime, time as dt_time, timedelta
 from io import StringIO
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import requests
@@ -32,6 +34,21 @@ CACHE_DIR.mkdir(exist_ok=True)
 CACHE_PATH = CACHE_DIR / "tx_night_session.csv"
 
 NIGHT_SESSION_URL = "https://www.taifex.com.tw/cht/3/futDailyMarketExcel"
+
+_TAIPEI_TZ = ZoneInfo("Asia/Taipei")
+NIGHT_SESSION_START = dt_time(15, 0)
+NIGHT_SESSION_END = dt_time(5, 0)
+NIGHT_SESSION_TOTAL_MINUTES = 14 * 60  # 15:00~次日05:00,共14小時
+
+# mis.taifex.com.tw 是期交所自己的「行情資訊網」,跟上面 futDailyMarketExcel(每日行情下載,
+# 只有結算後的完整一天數字)是完全不同的系統——這個是網頁本身在用的內部API,會隨盤中成交
+# 即時變動,才能做到「跟櫃買指數一樣即時監控」。用瀏覽器開發者工具實測抓到:網頁本身用的是
+# WebSocket(rtCore)做逐筆推播,但底層 getQuoteList 這支REST API單獨打也能拿到當下快照,
+# 不需要另外實作WebSocket,用一般輪詢(每次頁面重新整理打一次)就夠用。回應內容中文欄位
+# (DispCName等)編碼是亂碼(跟 futDailyMarketExcel 同樣的期交所網站編碼問題),不受影響的
+# 是 SymbolID/數字欄位,所以只取這些欄位,不解析中文名稱。
+QUOTE_LIST_URL = "https://mis.taifex.com.tw/futures/api/getQuoteList"
+QUOTE_LIST_PAYLOAD = {"MarketType": "0", "SymbolType": "F", "KindID": "1", "CID": "", "ExpireMonth": ""}
 
 # 欄位位置(0-indexed):契約代碼, 到期月份, 開盤, 最高, 最低, 最後成交價, 漲跌價, 漲跌%,
 # 成交量, 結算價, 未沖銷契約量, 最後最佳買價, 最後最佳賣價, 歷史最高, 歷史最低
@@ -146,6 +163,152 @@ def compute_night_session_strength(lookback_days: int = LOOKBACK_DAYS_DEFAULT) -
     }
 
 
+def is_night_session_open_now(now: datetime | None = None) -> bool:
+    """平日15:00~次日05:00(Asia/Taipei)。跟 intraday.is_market_open_now() 一樣不含國定
+    假日行事曆——颱風假/國定假日恰好是平日晚上時會誤判成夜盤中,get_tx_live_quote() 在
+    非交易時段仍會回傳空欄位、不會報錯,呼叫端優雅跳過即可,可接受。
+
+    凌晨0點~05:00這段屬於「前一個平日晚上15:00」開始的那個夜盤session,所以要往前一天
+    判斷是不是平日,不能只看「現在」是星期幾(例如週六凌晨0~5點還算在週五晚上開始的
+    夜盤裡,週一凌晨0~5點則不算,因為週日沒有15:00開盤)。
+    """
+    now = (now or datetime.now(_TAIPEI_TZ)).astimezone(_TAIPEI_TZ)
+    t = now.time()
+    if t >= NIGHT_SESSION_START:
+        return now.weekday() < 5
+    if t <= NIGHT_SESSION_END:
+        return (now.weekday() - 1) % 7 < 5
+    return False
+
+
+def _elapsed_night_session_minutes(now: datetime) -> float:
+    """從最近一次「平日15:00」算起經過幾分鐘——換算「這個時間點正常應該累積多少量能」
+    步調基準用,分鐘級精度就夠用,不需要到秒。"""
+    if now.time() >= NIGHT_SESSION_START:
+        start = now.replace(hour=15, minute=0, second=0, microsecond=0)
+    else:
+        start = (now - timedelta(days=1)).replace(hour=15, minute=0, second=0, microsecond=0)
+    return (now - start).total_seconds() / 60
+
+
+def get_tx_live_quote() -> dict | None:
+    """台指期(TX)近月合約即時成交量/報價——跟 get_night_session_history() 是不同資料源
+    (見上面 QUOTE_LIST_URL 的說明),這個才是真的隨盤中成交即時變動的數字。
+
+    回傳清單裡第一個 SymbolID 以「-F」結尾的項目當近月合約("-S"開頭的是現貨參考指數,
+    不是期貨合約;清單本身已經照到期月份由近到遠排序)。非交易時段、或該API本身異常、
+    或欄位是空字串(該API在沒有成交時就是回傳空字串,不是0)時,回傳 None,呼叫端優雅跳過。
+    """
+    try:
+        resp = requests.post(QUOTE_LIST_URL, json=QUOTE_LIST_PAYLOAD, headers=HEADERS, timeout=10)
+        quotes = resp.json().get("RtData", {}).get("QuoteList", [])
+    except Exception:
+        return None
+
+    front_month = next((q for q in quotes if str(q.get("SymbolID", "")).endswith("-F")), None)
+    if front_month is None:
+        return None
+
+    volume_str = str(front_month.get("CTotalVolume") or "").strip()
+    if not volume_str:
+        return None
+    try:
+        volume = int(float(volume_str))
+        price_str = str(front_month.get("CLastPrice") or "").strip()
+        last_price = float(price_str) if price_str else None
+        diff_pct_str = str(front_month.get("CDiffRate") or "").strip()
+        change_pct = float(diff_pct_str) if diff_pct_str else None
+    except (TypeError, ValueError):
+        return None
+
+    return {
+        "symbol_id": front_month["SymbolID"],
+        "volume": volume,
+        "last_price": last_price,
+        "change_pct": change_pct,
+    }
+
+
+PACE_MIN_ELAPSED_MINUTES = 15  # 剛開盤沒多久,步調比較(pace_ratio)波動太大不具參考性,先不給分數
+PACE_SCORE_SCALE = 50  # pace_ratio=1.0(正常步調)對應50分,分數映射見 compute_live_participation_score()
+
+
+def compute_live_participation_score(lookback_days: int = LOOKBACK_DAYS_DEFAULT) -> dict:
+    """夜盤盤中即時參與度評分——使用者要求「跟櫃買市場一樣有即時監控的評分分數」,
+    比照 app.py 櫃買指數位階(intraday.signal_range_position)的呈現風格,但這裡監控的是
+    「參與度」不是「價格位置」,兩者本質不同,分數設計也不一樣:
+
+    **不是方向性分數**:跟 compute_night_session_strength() 的既有立場一致,量能只代表
+    參與熱度,不代表多空方向,所以這裡的 score100 是 0~100 的單向強度分數(0=極度清淡,
+    100=極度熱絡),不是像櫃買位階那樣 -100~+100 的雙向分數。
+
+    **步調(pace)比較,不是單純的「目前量 vs 歷史全天均量」**:夜盤才進行到一半,直接拿
+    目前累積量能比歷史「一整夜」的均量一定會偏低,不能反映「現在算不算熱絡」。這裡改成
+    「目前經過的時間佔全部夜盤時段(15:00~次日05:00,共840分鐘)的比例」,乘上歷史均量
+    當作「這個時間點正常應該累積多少」的基準(pace baseline),目前累積量能除以這個基準
+    才是有意義的即時參考。**這是簡化假設**——假設量能均勻分佈在整個夜盤時段裡,實際上
+    開盤前段/尾盤通常比半夜清淡時段熱絡,用這個基準在時段頭尾算出來的比值會有系統性偏差,
+    當作粗略參考就好,不是精確的統計模型。
+
+    分數映射:score100 = min(100, max(0, pace_ratio * 50))——pace_ratio=1.0(正常步調)
+    →50分,pace_ratio>=2.0→100分封頂,pace_ratio=0(還沒成交)→0分,中間線性內插。
+    熱絡/清淡文字標籤沿用跟 compute_night_session_strength() 同一組門檻
+    (STRENGTH_STRONG_RATIO/STRENGTH_WEAK_RATIO),數字判斷跟文字標籤才會互相一致。
+
+    回傳 dict 一定有 "available" 這個key:
+    - 不在夜盤時段內:{"available": False, "reason": "closed"}
+    - 剛開盤未滿 PACE_MIN_ELAPSED_MINUTES 分鐘,或即時報價/歷史均量任一暫時抓不到:
+      {"available": False, "reason": "insufficient"}
+    - 正常情況:{"available": True, "score100": int, "label": "熱絡"/"普通"/"清淡",
+      "pace_ratio": float, "live_volume": int, "expected_volume": float,
+      "elapsed_minutes": float, "last_price": float|None, "change_pct": float|None,
+      "symbol_id": str}
+    """
+    now = datetime.now(_TAIPEI_TZ)
+    if not is_night_session_open_now(now):
+        return {"available": False, "reason": "closed"}
+
+    elapsed_minutes = _elapsed_night_session_minutes(now)
+    if elapsed_minutes < PACE_MIN_ELAPSED_MINUTES:
+        return {"available": False, "reason": "insufficient"}
+
+    live = get_tx_live_quote()
+    if live is None:
+        return {"available": False, "reason": "insufficient"}
+
+    hist = get_night_session_history(lookback_days=lookback_days)
+    if len(hist) < 2 or hist["volume"].mean() <= 0:
+        return {"available": False, "reason": "insufficient"}
+    avg_full_session_volume = hist["volume"].mean()
+
+    elapsed_fraction = min(1.0, elapsed_minutes / NIGHT_SESSION_TOTAL_MINUTES)
+    expected_volume = avg_full_session_volume * elapsed_fraction
+    if expected_volume <= 0:
+        return {"available": False, "reason": "insufficient"}
+    pace_ratio = live["volume"] / expected_volume
+
+    score100 = round(max(0.0, min(100.0, pace_ratio * PACE_SCORE_SCALE)))
+    if pace_ratio >= STRENGTH_STRONG_RATIO:
+        label = "熱絡"
+    elif pace_ratio <= STRENGTH_WEAK_RATIO:
+        label = "清淡"
+    else:
+        label = "普通"
+
+    return {
+        "available": True,
+        "score100": score100,
+        "label": label,
+        "pace_ratio": pace_ratio,
+        "live_volume": live["volume"],
+        "expected_volume": expected_volume,
+        "elapsed_minutes": elapsed_minutes,
+        "last_price": live["last_price"],
+        "change_pct": live["change_pct"],
+        "symbol_id": live["symbol_id"],
+    }
+
+
 if __name__ == "__main__":
     print("=== 台指期(TX)夜盤參與度 ===")
     result = compute_night_session_strength()
@@ -157,3 +320,18 @@ if __name__ == "__main__":
         print(f"近月合約當晚漲跌:{result['front_month_change_pct']}%")
     else:
         print("資料不足")
+
+    print()
+    print("=== 台指期(TX)夜盤即時參與度評分 ===")
+    live_result = compute_live_participation_score()
+    if live_result["available"]:
+        print(f"合約:{live_result['symbol_id']}")
+        print(f"分數:{live_result['score100']} → {live_result['label']}")
+        print(f"步調比(pace_ratio):{live_result['pace_ratio']:.2f}")
+        print(f"目前累積量能:{live_result['live_volume']:,} 口(已經過 {live_result['elapsed_minutes']:.0f} 分鐘,"
+              f"正常步調基準約 {live_result['expected_volume']:,.0f} 口)")
+        print(f"最新成交價:{live_result['last_price']}  漲跌%:{live_result['change_pct']}")
+    elif live_result["reason"] == "closed":
+        print("目前非夜盤交易時段(平日15:00~次日05:00)")
+    else:
+        print("剛開盤或資料暫時不足,還無法評分")
