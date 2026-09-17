@@ -157,23 +157,33 @@ with st.sidebar:
     # 預設值直接帶入 reversal_alert.py 的全域常數,使用者不改動的話行為跟改之前完全一樣。
     with st.expander("⚙️ 急殺警示門檻設定"):
         st.caption("距今日高點拉回%、或近5分鐘變動%,任一超過門檻就升級警示。不確定要設多少"
-                   "可以先看下面警示卡片裡自動換算出的股價,再回頭調整這裡的百分比。")
+                   "可以先看下面自動換算出的股價,再回頭調整這裡的百分比。")
+        use_custom_threshold = st.checkbox(
+            "使用自訂門檻", value=False,
+            help="不勾選就用系統預設值(拉回1%/急殺2%/近5分鐘0.8%);勾選後下面填的數字才會生效。",
+        )
         custom_pullback_warn_pct = st.number_input(
             "拉回警示門檻(%)", min_value=0.1, max_value=20.0,
-            value=reversal_alert.PULLBACK_WARN_PCT, step=0.1,
+            value=reversal_alert.PULLBACK_WARN_PCT, step=0.1, disabled=not use_custom_threshold,
         )
         custom_pullback_severe_pct = st.number_input(
             "急殺警示門檻(%,距高點拉回)", min_value=0.1, max_value=30.0,
-            value=reversal_alert.PULLBACK_SEVERE_PCT, step=0.1,
+            value=reversal_alert.PULLBACK_SEVERE_PCT, step=0.1, disabled=not use_custom_threshold,
         )
         custom_fast_drop_severe_pct = st.number_input(
             "急殺警示門檻(%,近5分鐘變動)", min_value=0.1, max_value=10.0,
-            value=reversal_alert.FAST_DROP_SEVERE_PCT, step=0.1,
+            value=reversal_alert.FAST_DROP_SEVERE_PCT, step=0.1, disabled=not use_custom_threshold,
         )
-        if custom_pullback_severe_pct < custom_pullback_warn_pct:
+        if use_custom_threshold and custom_pullback_severe_pct < custom_pullback_warn_pct:
             st.warning("急殺門檻比拉回門檻還小,「拉回」這個中間等級實際上不會出現,"
                        "拉回超過拉回門檻就會直接跳成急殺——如果不是故意的,建議急殺門檻"
                        "設得比拉回門檻大。")
+
+        # 沒勾選「使用自訂門檻」時,往下傳 None——compute_reversal_signal() 看到 None 會
+        # 自動退回 reversal_alert.py 的全域預設值,行為跟這個checkbox還沒出現之前完全一樣。
+        effective_pullback_warn_pct = custom_pullback_warn_pct if use_custom_threshold else None
+        effective_pullback_severe_pct = custom_pullback_severe_pct if use_custom_threshold else None
+        effective_fast_drop_severe_pct = custom_fast_drop_severe_pct if use_custom_threshold else None
 
         # 上面兩個number_input只有調完按Enter/失焦才會觸發rerun,不會邊打邊即時換算——
         # 這裡改用「這檔標的上一次成功抓到的今日高點」(存在session_state,下面報價區塊
@@ -181,11 +191,14 @@ with st.sidebar:
         # 才看得到對應股價。第一次查詢這檔標的、還沒有任何快取時顯示提示文字而不是報錯。
         _preview_code = code if query_mode == "個股" else ("^TWII" if query_mode == "加權指數" else "^TWOII")
         _preview_day_high = st.session_state.get(f"_last_day_high_{_preview_code}")
+        _preview_warn_pct = custom_pullback_warn_pct if use_custom_threshold else reversal_alert.PULLBACK_WARN_PCT
+        _preview_severe_pct = custom_pullback_severe_pct if use_custom_threshold else reversal_alert.PULLBACK_SEVERE_PCT
         if _preview_day_high:
             st.caption(
-                f"換算參考(依上次查到的今日高點 {_preview_day_high:,.2f}):"
-                f"拉回門檻價 **{_preview_day_high * (1 - custom_pullback_warn_pct / 100):,.2f}**、"
-                f"急殺門檻價 **{_preview_day_high * (1 - custom_pullback_severe_pct / 100):,.2f}**"
+                f"換算參考(依上次查到的今日高點 {_preview_day_high:,.2f}、"
+                f"{'目前使用自訂門檻' if use_custom_threshold else '目前使用系統預設門檻'}):"
+                f"拉回門檻價 **{_preview_day_high * (1 - _preview_warn_pct / 100):,.2f}**、"
+                f"急殺門檻價 **{_preview_day_high * (1 - _preview_severe_pct / 100):,.2f}**"
             )
         else:
             st.caption("這檔標的還沒有查過資料,查詢一次之後這裡會顯示換算股價參考。")
@@ -341,9 +354,9 @@ def _make_index_reversal_fragment(
     mis_otc: bool,
     display_symbol: str,
     market_open: bool,
-    pullback_warn_pct: float,
-    pullback_severe_pct: float,
-    fast_drop_severe_pct: float,
+    pullback_warn_pct: float | None,
+    pullback_severe_pct: float | None,
+    fast_drop_severe_pct: float | None,
 ):
     """加權指數/櫃買指數共用的「⚠️盤中急殺警示」區塊,包成工廠函式(不是直接定義一次
     fragment)是因為呼叫的位置不一樣——^TWII 走一般流程(後面才有K線/df可以用),^TWOII
@@ -351,12 +364,18 @@ def _make_index_reversal_fragment(
     都要在各自的 st.stop() 之前呼叫這個,不能共用同一個「寫死在某個位置」的 fragment。
 
     pullback_warn_pct/pullback_severe_pct/fast_drop_severe_pct 是側邊欄「⚙️急殺警示門檻
-    設定」讀出來的值(使用者沒改的話就是 reversal_alert.py 的全域預設值),當參數傳進來
-    而不是直接在裡面讀 reversal_alert 常數,這樣使用者在側邊欄調整後才能立刻反映在這裡。
+    設定」讀出來的值,使用者沒勾選「使用自訂門檻」時是 None(對應checkbox不勾選=用預設值)
+    ——這裡先把 None 換成 reversal_alert.py 的全域預設值,一方面是給 compute_reversal_signal
+    的關鍵字參數(它自己也認得 None,這裡先轉換純粹是為了下面caption字串裡要格式化成數字,
+    傳None進去f-string的{:.1f}會直接噴TypeError,不是為了邏輯需要)。
 
     只做急殺警示,不做像個股那樣的5訊號綜合評分——指數沒有近5日均量/委買委賣力道以外的
     訊號可以組成那一套評分邏輯,硬套意義不大。
     """
+    pullback_warn_pct = reversal_alert.PULLBACK_WARN_PCT if pullback_warn_pct is None else pullback_warn_pct
+    pullback_severe_pct = reversal_alert.PULLBACK_SEVERE_PCT if pullback_severe_pct is None else pullback_severe_pct
+    fast_drop_severe_pct = reversal_alert.FAST_DROP_SEVERE_PCT if fast_drop_severe_pct is None else fast_drop_severe_pct
+
     history_key = f"reversal_price_history_{mis_code}_{mis_otc}"
     st.session_state.setdefault(history_key, [])
 
@@ -900,7 +919,7 @@ if code == "^TWOII":
     # 後面跟^TWII共用的區塊——那個區塊 ^TWOII 永遠不會執行到。
     _make_index_reversal_fragment(
         mis_code, mis_otc, display_symbol, intraday.is_market_open_now(),
-        custom_pullback_warn_pct, custom_pullback_severe_pct, custom_fast_drop_severe_pct,
+        effective_pullback_warn_pct, effective_pullback_severe_pct, effective_fast_drop_severe_pct,
     )()
     st.stop()
 
@@ -1039,9 +1058,9 @@ if query_mode == "個股":
             iq.get("day_high"),
             iq["last_price"],
             st.session_state[intraday_history_key],
-            pullback_warn_pct=custom_pullback_warn_pct,
-            pullback_severe_pct=custom_pullback_severe_pct,
-            fast_drop_severe_pct=custom_fast_drop_severe_pct,
+            pullback_warn_pct=effective_pullback_warn_pct,
+            pullback_severe_pct=effective_pullback_severe_pct,
+            fast_drop_severe_pct=effective_fast_drop_severe_pct,
         )
         _render_reversal_banner(reversal_signal)
 
@@ -1065,7 +1084,7 @@ elif code == "^TWII":
     # 加權指數需要處理。
     _make_index_reversal_fragment(
         mis_code, mis_otc, display_symbol, intraday.is_market_open_now(),
-        custom_pullback_warn_pct, custom_pullback_severe_pct, custom_fast_drop_severe_pct,
+        effective_pullback_warn_pct, effective_pullback_severe_pct, effective_fast_drop_severe_pct,
     )()
 
 IS_INDEX = code in INDEX_DISPLAY_NAMES  # 這裡只會是「個股」或「加權指數」,櫃買指數在上面已經 st.stop()
