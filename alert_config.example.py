@@ -21,8 +21,15 @@ TELEGRAM_CHAT_ID = "在這裡貼上你的Chat ID"
 # 想監控的標的清單,otc=False是上市股票/加權指數,otc=True是上櫃股票/櫃買指數。
 # code 是股票代號,或加權指數用固定代號"t00"、櫃買指數用固定代號"o00"(這兩個是TWSE MIS
 # 對指數的代號,不是股票代號,細節見 app.py 裡「mis_code」相關的說明)。
+#
+# 每個標的可以選擇性加 pullback_warn_pct/pullback_severe_pct/fast_drop_severe_pct 這三個
+# 欄位,覆蓋 reversal_alert.py 裡的全域預設門檻(1%/2%/0.8%)——沒加這幾個欄位就是用預設值,
+# 加權指數/櫃買指數這種波動平穩的標的通常不用特別設定。波動大的個股(例如小型股、興櫃股)
+# 建議設寬鬆一點的門檻,不然正常的盤中震盪就會一直誤報。
 WATCH_LIST = [
     {"label": "櫃買指數", "code": "o00", "otc": True},
     {"label": "加權指數", "code": "t00", "otc": False},
-    # {"label": "台積電", "code": "2330", "otc": False},
+    # {"label": "台積電", "code": "2330", "otc": False},  # 大型權值股,波動溫和,用預設門檻即可
+    # {"label": "高波動小型股", "code": "1234", "otc": False,
+    #  "pullback_warn_pct": 3.0, "pullback_severe_pct": 5.0, "fast_drop_severe_pct": 1.5},
 ]

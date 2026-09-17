@@ -77,7 +77,17 @@ def _check_one(target: dict, state: _WatchState) -> None:
 
     now = time.time()
     state.price_history.append((now, iq["last_price"]))
-    signal = reversal_alert.compute_reversal_signal(iq.get("day_high"), iq["last_price"], list(state.price_history))
+    # target 裡的 pullback_warn_pct/pullback_severe_pct/fast_drop_severe_pct 是選填的
+    # 每個標的自訂門檻(見 alert_config.example.py),沒填就是 None,compute_reversal_signal
+    # 會自動退回全域預設值。
+    signal = reversal_alert.compute_reversal_signal(
+        iq.get("day_high"),
+        iq["last_price"],
+        list(state.price_history),
+        pullback_warn_pct=target.get("pullback_warn_pct"),
+        pullback_severe_pct=target.get("pullback_severe_pct"),
+        fast_drop_severe_pct=target.get("fast_drop_severe_pct"),
+    )
     severity = signal["severity"]
     print(f"[{_now_str()}] {label}: {iq['last_price']:,.2f} | {severity} | {signal['detail']}")
 

@@ -24,8 +24,11 @@
   剛打開頁面、樣本還不夠時這個條件就先跳過,不會硬湊。
 
 **這幾個門檻數字(1%/2%/5分鐘/0.8%)都是主觀訂的,不是統計驗證過的數字**——跟專案裡其他
-訊號(us_market.py的強弱門檻、intraday.py的正規化幅度)一樣的免責聲明,之後想調整直接改
-這幾個常數即可。
+訊號(us_market.py的強弱門檻、intraday.py的正規化幅度)一樣的免責聲明。這幾個常數是「全域
+預設值」,個別標的想用不同門檻(例如高波動股票需要比較寬鬆的門檻避免誤報)可以呼叫
+`compute_reversal_signal()` 時傳入對應的 `pullback_warn_pct`/`pullback_severe_pct`/
+`fast_drop_severe_pct` 覆蓋,不用改這裡的常數影響到其他標的(見 alert_monitor.py 的
+WATCH_LIST 怎麼傳這幾個可選欄位)。
 """
 
 from __future__ import annotations
@@ -38,13 +41,29 @@ FAST_DROP_SEVERE_PCT = 0.8  # 近5分鐘跌幅超過這個%,標「急殺」—�
 SEVERITY_ORDER = {"正常": 0, "拉回": 1, "急殺": 2}
 
 
-def compute_reversal_signal(day_high: float | None, last_price: float | None, price_history: list) -> dict:
+def compute_reversal_signal(
+    day_high: float | None,
+    last_price: float | None,
+    price_history: list,
+    pullback_warn_pct: float | None = None,
+    pullback_severe_pct: float | None = None,
+    fast_drop_severe_pct: float | None = None,
+) -> dict:
     """price_history:呼叫端自己在 st.session_state 累積的 [(unix_timestamp, price), ...],
     按時間排序、越新的在越後面(比照 intraday.py 短線動能訊號的既有慣例)。
+
+    pullback_warn_pct/pullback_severe_pct/fast_drop_severe_pct:個別標的想覆蓋全域門檻
+    (PULLBACK_WARN_PCT等常數)時傳這幾個參數,例如波動大的股票用比較寬鬆的門檻避免正常
+    震盪就誤報。不傳(None)就用全域預設值——這是刻意的參數化,不是加了又不用的擺設:
+    加權指數/櫃買指數這種波動平穩的標的本來就適合用全域預設值,不用每個都特別設定。
 
     回傳 {"pullback_pct", "recent_change_pct", "severity"("正常"/"拉回"/"急殺"), "detail"}。
     兩個百分比欄位在資料不足時是 None,呼叫端顯示時要自己處理。
     """
+    pullback_warn_pct = PULLBACK_WARN_PCT if pullback_warn_pct is None else pullback_warn_pct
+    pullback_severe_pct = PULLBACK_SEVERE_PCT if pullback_severe_pct is None else pullback_severe_pct
+    fast_drop_severe_pct = FAST_DROP_SEVERE_PCT if fast_drop_severe_pct is None else fast_drop_severe_pct
+
     pullback_pct = None
     if day_high and last_price is not None and day_high > 0:
         pullback_pct = (day_high - last_price) / day_high * 100
@@ -57,10 +76,10 @@ def compute_reversal_signal(day_high: float | None, last_price: float | None, pr
         if baseline:
             recent_change_pct = (now_price - baseline) / baseline * 100
 
-    is_severe = (pullback_pct is not None and pullback_pct >= PULLBACK_SEVERE_PCT) or (
-        recent_change_pct is not None and recent_change_pct <= -FAST_DROP_SEVERE_PCT
+    is_severe = (pullback_pct is not None and pullback_pct >= pullback_severe_pct) or (
+        recent_change_pct is not None and recent_change_pct <= -fast_drop_severe_pct
     )
-    is_warn = pullback_pct is not None and pullback_pct >= PULLBACK_WARN_PCT
+    is_warn = pullback_pct is not None and pullback_pct >= pullback_warn_pct
 
     if is_severe:
         severity = "急殺"
@@ -95,3 +114,15 @@ if __name__ == "__main__":
     print("\n=== 情境3:急殺(近5分鐘內從高點快速跳水)===")
     hist = [(1000 + i * 10, 100.0) for i in range(20)] + [(1000 + 20 * 10 + i * 10, 100.0 - i * 0.3) for i in range(1, 6)]
     print(compute_reversal_signal(day_high=100.0, last_price=hist[-1][1], price_history=hist))
+
+    print("\n=== 情境4:同一組資料,用自訂寬鬆門檻(高波動股票)就不算急殺、降級成拉回 ===")
+    print(
+        compute_reversal_signal(
+            day_high=100.0,
+            last_price=hist[-1][1],
+            price_history=hist,
+            pullback_warn_pct=1.2,
+            pullback_severe_pct=5.0,
+            fast_drop_severe_pct=3.0,
+        )
+    )
