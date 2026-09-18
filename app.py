@@ -1220,13 +1220,21 @@ if night_signal:
                 if short_score100 is not None
                 else ""
             )
+            # 今晚是不是真的還會開夜盤——週五~週日晚上TAIFEX不開夜盤(週五晚上接的是
+            # 週六,不是交易日),這幾天不能說「今晚15:00開盤後換成即時評分」,不然講的話
+            # 會兌現不了,使用者等到15:00還是看不到即時評分,會誤以為功能壞了
+            next_session_note = (
+                "今晚15:00開盤後這裡會換成盤中即時評分。"
+                if night_session.has_night_session_tonight()
+                else "今晚(週五~週日)沒有夜盤,下一個夜盤要等到下週一15:00開盤。"
+            )
             live_block_html = (
                 '<div style="margin-top:1rem; padding-top:0.8rem; border-top:1px solid rgba(255,255,255,0.08);">'
                 f'<div class="quote-symbol" style="font-size:0.85rem;">📅 昨晚({night_signal["date"]})最終評分(收盤結算,非步調比較)</div>'
                 f'<div class="quote-price-row"><div class="quote-price" style="font-size:2.4rem; color:{ln_color};">{last_night_score}</div>'
                 f'<div class="quote-badge badge-flat">{strength_text}</div></div>'
                 f"{_build_participation_gauge_html(last_night_score)}"
-                f'<div style="font-size:0.78rem; color:#8b93a7; margin-top:0.4rem;">{short_score_note}今晚15:00開盤後這裡會換成盤中即時評分。</div></div>'
+                f'<div style="font-size:0.78rem; color:#8b93a7; margin-top:0.4rem;">{short_score_note}{next_session_note}</div></div>'
             )
         else:
             live_block_html = (

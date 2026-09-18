@@ -202,21 +202,41 @@ def compute_night_session_strength(
 
 
 def is_night_session_open_now(now: datetime | None = None) -> bool:
-    """平日15:00~次日05:00(Asia/Taipei)。跟 intraday.is_market_open_now() 一樣不含國定
-    假日行事曆——颱風假/國定假日恰好是平日晚上時會誤判成夜盤中,get_tx_live_quote() 在
-    非交易時段仍會回傳空欄位、不會報錯,呼叫端優雅跳過即可,可接受。
+    """周一到周四晚上15:00~次日05:00(Asia/Taipei)。**週五晚上沒有夜盤**——TAIFEX的規則
+    是夜盤要銜接「下一個交易日」才會開,週五晚上後面接的是週六(不是交易日),所以週五
+    15:00之後到週六05:00這段實際上不開盤,跟平日晚上不一樣。這是這次抓到的真實bug:
+    舊版直接用`weekday() < 5`(週一~週五都算),沒排除週五晚上,結果週五晚上會誤判成
+    夜盤中,呼叫`get_tx_live_quote()`拿到的其實是當天日盤收盤時定住不動的最後一筆報價
+    (TAIFEX的即時報價API不會因為沒有夜盤就回傳空值,它就是回傳「目前這個合約最後已知的
+    狀態」,不會主動說「現在沒有交易」),`compute_live_participation_score()`會把這個
+    靜止的舊報價當成活的即時資料下去算分,畫面看起來像是「有夜盤即時評分」但數字永遠不動
+    ——使用者回報「這一塊是死的,根本沒有即時評分」正是這個原因。
+
+    跟 intraday.is_market_open_now() 一樣不含國定假日行事曆——颱風假/國定假日恰好是
+    平日晚上時仍會誤判成夜盤中,這個影響範圍小(一年就幾天)所以先不修,跟週五這種
+    每週固定發生、影響大的情況不一樣。
 
     凌晨0點~05:00這段屬於「前一個平日晚上15:00」開始的那個夜盤session,所以要往前一天
-    判斷是不是平日,不能只看「現在」是星期幾(例如週六凌晨0~5點還算在週五晚上開始的
-    夜盤裡,週一凌晨0~5點則不算,因為週日沒有15:00開盤)。
+    判斷「前一天」是不是「有開夜盤的平日」(週一~週四),不能只看「現在」是星期幾——例如
+    週五凌晨0~5點算在週四晚上開始的夜盤裡(週四晚上有開盤),週六凌晨0~5點則不算(週五
+    晚上沒開盤),週一凌晨0~5點也不算(週日沒有15:00開盤)。
     """
     now = (now or datetime.now(_TAIPEI_TZ)).astimezone(_TAIPEI_TZ)
     t = now.time()
     if t >= NIGHT_SESSION_START:
-        return now.weekday() < 5
+        return now.weekday() < 4  # 週一(0)~週四(3)晚上才開夜盤,週五(4)晚上不開
     if t <= NIGHT_SESSION_END:
-        return (now.weekday() - 1) % 7 < 5
+        return (now.weekday() - 1) % 7 < 4  # 前一天要是「有開夜盤的平日」(週一~週四)
     return False
+
+
+def has_night_session_tonight(now: datetime | None = None) -> bool:
+    """今天晚上15:00會不會真的開夜盤(週一~週四才會,週五~週日不會)——給app.py判斷
+    「昨晚最終評分」卡片下面那句提示文字該講「今晚15:00開盤後換成即時評分」還是「今晚沒有
+    夜盤」時用,跟`is_night_session_open_now()`共用同一個週五排除規則,不要在app.py那邊
+    又刻意寫一份`weekday() < 4`的判斷,兩邊各自維護容易漏改。"""
+    now = (now or datetime.now(_TAIPEI_TZ)).astimezone(_TAIPEI_TZ)
+    return now.weekday() < 4
 
 
 def _elapsed_night_session_minutes(now: datetime) -> float:
@@ -236,6 +256,20 @@ def get_tx_live_quote() -> dict | None:
     回傳清單裡第一個 SymbolID 以「-F」結尾的項目當近月合約("-S"開頭的是現貨參考指數,
     不是期貨合約;清單本身已經照到期月份由近到遠排序)。非交易時段、或該API本身異常、
     或欄位是空字串(該API在沒有成交時就是回傳空字串,不是0)時,回傳 None,呼叫端優雅跳過。
+
+    **重要陷阱**:這個API不會因為「還沒開盤/今晚沒有夜盤」就回傳空值——它就是回傳「這個
+    合約目前最後已知的狀態」,沒有新成交就一直回傳同一筆舊資料,不會主動說「現在沒有交易」。
+    如果晚上15:00剛過還沒真正開始交易(或整個晚上沒有夜盤,is_night_session_open_now()
+    誤判的情況,例如假日),抓到的會是白天日盤收盤時定住的舊報價,`CTime`(最後成交時間)
+    會停在日盤收盤附近(13:4x前後),明顯早於夜盤開盤時間15:00。這裡額外驗證一次:如果
+    現在已經過了今天15:00(晚上這段,不是跨夜到隔天清晨那段),但報價的CTime還停在15:00
+    之前,代表這其實是舊的日盤收盤報價、不是真的夜盤成交,回傳None(呼叫端會判斷成
+    「資料不足」而不是誤把靜止的舊報價當成活的即時資料顯示)。這是實際發生過的bug——
+    週五晚上因為is_night_session_open_now()誤判成夜盤中(已修正),曾經讓「夜盤即時參與度
+    評分」整晚顯示同一個數字,看起來像是死的。跨夜到隔天清晨(00:00~05:00)這段不做這個
+    檢查,因為當時合理的CTime範圍(可能是昨晚15:00~23:59,也可能是今天00:00~05:00)
+    橫跨兩個日期,单純比較時間字串會誤判,情況複雜所以先不查,反正這個時段的「今晚沒開盤」
+    誤判已經靠is_night_session_open_now()的週五排除擋掉大部分情況。
     """
     try:
         resp = requests.post(QUOTE_LIST_URL, json=QUOTE_LIST_PAYLOAD, headers=HEADERS, timeout=10)
@@ -246,6 +280,12 @@ def get_tx_live_quote() -> dict | None:
     front_month = next((q for q in quotes if str(q.get("SymbolID", "")).endswith("-F")), None)
     if front_month is None:
         return None
+
+    now = datetime.now(_TAIPEI_TZ)
+    if now.time() >= NIGHT_SESSION_START:
+        ctime_str = str(front_month.get("CTime") or "").strip()
+        if ctime_str and ctime_str < "150000":
+            return None
 
     volume_str = str(front_month.get("CTotalVolume") or "").strip()
     if not volume_str:
