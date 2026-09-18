@@ -48,7 +48,13 @@ NIGHT_SESSION_TOTAL_MINUTES = 14 * 60  # 15:00~次日05:00,共14小時
 # (DispCName等)編碼是亂碼(跟 futDailyMarketExcel 同樣的期交所網站編碼問題),不受影響的
 # 是 SymbolID/數字欄位,所以只取這些欄位,不解析中文名稱。
 QUOTE_LIST_URL = "https://mis.taifex.com.tw/futures/api/getQuoteList"
-QUOTE_LIST_PAYLOAD = {"MarketType": "0", "SymbolType": "F", "KindID": "1", "CID": "", "ExpireMonth": ""}
+# 這支API日盤跟夜盤是完全不同的兩組參數/兩組合約代碼,不是同一份資料自動涵蓋兩個時段:
+# 日盤(一般交易時段08:45~13:45)用 MarketType="0",合約代碼字尾"-F";夜盤(盤後交易時段
+# 15:00~次日05:00)要改用 MarketType="1",合約代碼字尾"-M"(直接對兩邊都實測過:夜盤
+# 用日盤那組參數打,回傳的就是日盤13:45收盤時定住的最後一筆舊報價,不會報錯也不會是空值,
+# 這正是之前誤以為「週五晚上沒開夜盤」的真正原因——根本沒打對API,跟星期幾無關)。
+QUOTE_LIST_PAYLOAD_DAY = {"MarketType": "0", "SymbolType": "F", "KindID": "1", "CID": "", "ExpireMonth": ""}
+QUOTE_LIST_PAYLOAD_NIGHT = {"MarketType": "1", "SymbolType": "F", "KindID": "1", "CID": "", "ExpireMonth": ""}
 
 # 欄位位置(0-indexed):契約代碼, 到期月份, 開盤, 最高, 最低, 最後成交價, 漲跌價, 漲跌%,
 # 成交量, 結算價, 未沖銷契約量, 最後最佳買價, 最後最佳賣價, 歷史最高, 歷史最低
@@ -202,41 +208,41 @@ def compute_night_session_strength(
 
 
 def is_night_session_open_now(now: datetime | None = None) -> bool:
-    """周一到周四晚上15:00~次日05:00(Asia/Taipei)。**週五晚上沒有夜盤**——TAIFEX的規則
-    是夜盤要銜接「下一個交易日」才會開,週五晚上後面接的是週六(不是交易日),所以週五
-    15:00之後到週六05:00這段實際上不開盤,跟平日晚上不一樣。這是這次抓到的真實bug:
-    舊版直接用`weekday() < 5`(週一~週五都算),沒排除週五晚上,結果週五晚上會誤判成
-    夜盤中,呼叫`get_tx_live_quote()`拿到的其實是當天日盤收盤時定住不動的最後一筆報價
-    (TAIFEX的即時報價API不會因為沒有夜盤就回傳空值,它就是回傳「目前這個合約最後已知的
-    狀態」,不會主動說「現在沒有交易」),`compute_live_participation_score()`會把這個
-    靜止的舊報價當成活的即時資料下去算分,畫面看起來像是「有夜盤即時評分」但數字永遠不動
-    ——使用者回報「這一塊是死的,根本沒有即時評分」正是這個原因。
+    """周一到周五晚上15:00~次日05:00(Asia/Taipei)。**這裡曾經誤修過一次**:之前錯誤地
+    以為「週五晚上接的是週六(非交易日)所以不開夜盤」,把條件改成`weekday() < 4`排除
+    週五——這個判斷本身是錯的,TAIFEX 週五晚上正常開盤(現場實測+使用者截圖驗證,今天
+    週五21:49仍有真實成交跳動),已經改回`weekday() < 5`。
 
-    跟 intraday.is_market_open_now() 一樣不含國定假日行事曆——颱風假/國定假日恰好是
-    平日晚上時仍會誤判成夜盤中,這個影響範圍小(一年就幾天)所以先不修,跟週五這種
-    每週固定發生、影響大的情況不一樣。
+    當時觀察到的「週五晚上資料像死的」症狀,真正原因不是週五沒開盤,是
+    `get_tx_live_quote()`打錯API參數(見該函式docstring)——查的是日盤那組
+    `MarketType=0`/`-F`合約,日盤13:45收盤後這組資料就不再更新,不管星期幾晚上都會卡住,
+    只是剛好那天是週五讓人誤以為跟星期幾有關。教訓:症狀跟猜測的原因剛好同時發生
+    (週五+資料卡住)不代表真的有因果關係,要直接驗證資料源本身,不要只憑相關性下結論。
+
+    跟 intraday.is_market_open_now() 一樣不含國定假日行事曆——颱風假/國定假日晚上仍會
+    誤判成夜盤中,這個影響範圍小(一年就幾天)所以先不修。
 
     凌晨0點~05:00這段屬於「前一個平日晚上15:00」開始的那個夜盤session,所以要往前一天
-    判斷「前一天」是不是「有開夜盤的平日」(週一~週四),不能只看「現在」是星期幾——例如
-    週五凌晨0~5點算在週四晚上開始的夜盤裡(週四晚上有開盤),週六凌晨0~5點則不算(週五
+    判斷「前一天」是不是「有開夜盤的平日」(週一~週五),不能只看「現在」是星期幾——例如
+    週六凌晨0~5點算在週五晚上開始的夜盤裡(週五晚上有開盤),週日凌晨0~5點則不算(週六
     晚上沒開盤),週一凌晨0~5點也不算(週日沒有15:00開盤)。
     """
     now = (now or datetime.now(_TAIPEI_TZ)).astimezone(_TAIPEI_TZ)
     t = now.time()
     if t >= NIGHT_SESSION_START:
-        return now.weekday() < 4  # 週一(0)~週四(3)晚上才開夜盤,週五(4)晚上不開
+        return now.weekday() < 5  # 週一(0)~週五(4)晚上才開夜盤
     if t <= NIGHT_SESSION_END:
-        return (now.weekday() - 1) % 7 < 4  # 前一天要是「有開夜盤的平日」(週一~週四)
+        return (now.weekday() - 1) % 7 < 5  # 前一天要是「有開夜盤的平日」(週一~週五)
     return False
 
 
 def has_night_session_tonight(now: datetime | None = None) -> bool:
-    """今天晚上15:00會不會真的開夜盤(週一~週四才會,週五~週日不會)——給app.py判斷
+    """今天晚上15:00會不會真的開夜盤(週一~週五才會,週六~週日不會)——給app.py判斷
     「昨晚最終評分」卡片下面那句提示文字該講「今晚15:00開盤後換成即時評分」還是「今晚沒有
-    夜盤」時用,跟`is_night_session_open_now()`共用同一個週五排除規則,不要在app.py那邊
-    又刻意寫一份`weekday() < 4`的判斷,兩邊各自維護容易漏改。"""
+    夜盤」時用,跟`is_night_session_open_now()`共用同一個規則,不要在app.py那邊
+    又刻意寫一份`weekday() < 5`的判斷,兩邊各自維護容易漏改。"""
     now = (now or datetime.now(_TAIPEI_TZ)).astimezone(_TAIPEI_TZ)
-    return now.weekday() < 4
+    return now.weekday() < 5
 
 
 def _elapsed_night_session_minutes(now: datetime) -> float:
@@ -249,40 +255,18 @@ def _elapsed_night_session_minutes(now: datetime) -> float:
     return (now - start).total_seconds() / 60
 
 
-def get_tx_live_quote() -> dict | None:
-    """台指期(TX)近月合約目前最後已知報價——跟 get_night_session_history() 是不同資料源
-    (見上面 QUOTE_LIST_URL 的說明)。不管現在是不是真的夜盤中都會回傳(只要API本身正常、
-    這個合約有任何已知報價),用於畫面上「現在指數多少」的顯示——不管夜盤有沒有開,使用者
-    都應該看得到某個TX指數數字,不是只有夜盤即時評分算得出來才顯示。
-
-    回傳清單裡第一個 SymbolID 以「-F」結尾的項目當近月合約("-S"開頭的是現貨參考指數,
-    不是期貨合約;清單本身已經照到期月份由近到遠排序)。API本身異常、或欄位是空字串
-    (該API在沒有任何成交紀錄時就是回傳空字串,不是0)時,回傳 None,呼叫端優雅跳過。
-
-    **重要陷阱**:這個API不會因為「還沒開盤/今晚沒有夜盤」就回傳空值——它就是回傳「這個
-    合約目前最後已知的狀態」,沒有新成交就一直回傳同一筆舊資料,不會主動說「現在沒有交易」。
-    如果晚上15:00剛過還沒真正開始交易(或整個晚上沒有夜盤,例如假日),抓到的會是白天日盤
-    收盤時定住的舊報價,`CTime`(最後成交時間)會停在日盤收盤附近(13:4x前後),明顯早於
-    夜盤開盤時間15:00。這裡額外算一個`is_live`旗標:如果現在已經過了今天15:00(晚上這段,
-    不是跨夜到隔天清晨那段),但報價的CTime還停在15:00之前,代表這其實是舊的日盤收盤報價、
-    不是真的夜盤成交,`is_live=False`——呼叫端如果只想要「真的活的夜盤成交」(例如即時評分
-    算分)才自己判斷這個旗標決定要不要用;如果只是想顯示「目前指數是多少」(不管新舊都想看
-    到一個數字),可以不管這個旗標直接顯示,但要搭配`ctime`告知使用者這筆報價的實際時間,
-    不要讓人誤以為那是剛剛發生的成交。跨夜到隔天清晨(00:00~05:00)這段不算`is_live`
-    (交由呼叫端自行決定,原因跟之前一樣:合理的CTime範圍橫跨兩個日期,單純比較時間字串
-    會誤判,先簡化成一律標True不擋)。這是實際發生過的bug帶出的設計:週五晚上因為
-    is_night_session_open_now()誤判成夜盤中(已修正),曾經讓「夜盤即時參與度評分」整晚
-    顯示同一個數字看起來像是死的;修完那個bug後,原本的「昨晚最終評分」fallback卡片又完全
-    不顯示任何指數數字(因為compute_night_session_strength()的歷史資料源本來就沒有價格
-    欄位,只有%漲跌),所以再抽出這支函式讓app.py不管夜盤開不開都能拿到一個指數數字顯示。
-    """
+def _fetch_tx_quote(payload: dict, suffix: str) -> dict | None:
+    """打一次 getQuoteList,取回傳清單裡第一個 SymbolID 以指定字尾結尾的項目當近月合約
+    ("-S"開頭的是現貨參考指數,不是期貨合約;清單本身已經照到期月份由近到遠排序)。
+    API本身異常、或成交量欄位是空字串(該API在沒有任何成交紀錄時就是回傳空字串,不是0)
+    時,回傳 None,呼叫端優雅跳過/改打另一組參數。"""
     try:
-        resp = requests.post(QUOTE_LIST_URL, json=QUOTE_LIST_PAYLOAD, headers=HEADERS, timeout=10)
+        resp = requests.post(QUOTE_LIST_URL, json=payload, headers=HEADERS, timeout=10)
         quotes = resp.json().get("RtData", {}).get("QuoteList", [])
     except Exception:
         return None
 
-    front_month = next((q for q in quotes if str(q.get("SymbolID", "")).endswith("-F")), None)
+    front_month = next((q for q in quotes if str(q.get("SymbolID", "")).endswith(suffix)), None)
     if front_month is None:
         return None
 
@@ -298,18 +282,55 @@ def get_tx_live_quote() -> dict | None:
     except (TypeError, ValueError):
         return None
 
-    ctime_str = str(front_month.get("CTime") or "").strip()
-    now = datetime.now(_TAIPEI_TZ)
-    is_live = not (now.time() >= NIGHT_SESSION_START and ctime_str and ctime_str < "150000")
-
     return {
         "symbol_id": front_month["SymbolID"],
         "volume": volume,
         "last_price": last_price,
         "change_pct": change_pct,
-        "ctime": ctime_str or None,
-        "is_live": is_live,
+        "ctime": str(front_month.get("CTime") or "").strip() or None,
     }
+
+
+def get_tx_live_quote() -> dict | None:
+    """台指期(TX)近月合約目前最後已知報價——跟 get_night_session_history() 是不同資料源
+    (見上面 QUOTE_LIST_URL 的說明)。不管現在是不是真的夜盤中都會回傳(只要API本身正常、
+    這個合約有任何已知報價),用於畫面上「現在指數多少」的顯示——不管夜盤有沒有開,使用者
+    都應該看得到某個TX指數數字,不是只有夜盤即時評分算得出來才顯示。
+
+    **這裡曾經誤修過一次真正的root cause**:一度以為「週五晚上沒開夜盤」導致資料看起來
+    卡住,但直接實測發現問題其實是這支API日盤/夜盤是完全不同的兩組參數/合約代碼(見
+    `QUOTE_LIST_PAYLOAD_DAY`/`QUOTE_LIST_PAYLOAD_NIGHT`的說明),之前只打了日盤那組,
+    晚上當然一直卡在13:45收盤的舊報價,跟星期幾無關。現在依「現在是不是夜盤時段」決定先
+    打哪一組,失敗才 fallback 打另一組(確保不管什麼時候呼叫都盡量有資料可顯示)。
+
+    **is_live 判斷**:比對報價的`CTime`跟現在時間的分鐘差,超過15分鐘沒動代表這其實是
+    舊報價(例如剛好在夜盤開盤前的空窗、或假日/收盤後一直沒有新成交),`is_live=False`
+    ——呼叫端如果只想要「真的活的即時成交」(例如即時評分算分)才自己判斷這個旗標決定
+    要不要用;如果只是想顯示「目前指數是多少」(不管新舊都想看到一個數字),可以不管這個
+    旗標直接顯示,但要搭配`ctime`告知使用者這筆報價的實際時間,不要讓人誤以為那是剛剛
+    發生的成交。
+    """
+    now = datetime.now(_TAIPEI_TZ)
+    in_night_hours = now.time() >= NIGHT_SESSION_START or now.time() <= NIGHT_SESSION_END
+    primary = (QUOTE_LIST_PAYLOAD_NIGHT, "-M") if in_night_hours else (QUOTE_LIST_PAYLOAD_DAY, "-F")
+    fallback = (QUOTE_LIST_PAYLOAD_DAY, "-F") if in_night_hours else (QUOTE_LIST_PAYLOAD_NIGHT, "-M")
+
+    quote = _fetch_tx_quote(*primary) or _fetch_tx_quote(*fallback)
+    if quote is None:
+        return None
+
+    is_live = False
+    ctime_str = quote["ctime"]
+    if ctime_str and len(ctime_str) == 6:
+        try:
+            quote_dt = now.replace(hour=int(ctime_str[0:2]), minute=int(ctime_str[2:4]),
+                                    second=int(ctime_str[4:6]), microsecond=0)
+            is_live = abs((now - quote_dt).total_seconds()) / 60 <= 15
+        except ValueError:
+            is_live = False
+
+    quote["is_live"] = is_live
+    return quote
 
 
 PACE_MIN_ELAPSED_MINUTES = 15  # 剛開盤沒多久,步調比較(pace_ratio)波動太大不具參考性,先不給分數
