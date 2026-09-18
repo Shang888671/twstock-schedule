@@ -26,7 +26,15 @@ from fetch_data import (
 )
 from indicators import add_indicators
 from volume_profile import find_nearest_supports, find_nearest_resistances
-from us_market import get_us_overnight_signal, US_MARKET_SYMBOLS, SCORE_SYMBOLS, STRENGTH_WEIGHT, SCORE_STRONG_THRESHOLD
+from us_market import (
+    get_us_overnight_signal,
+    US_MARKET_SYMBOLS,
+    SCORE_SYMBOLS,
+    INVERTED_SYMBOLS,
+    effective_sign,
+    STRENGTH_WEIGHT,
+    SCORE_STRONG_THRESHOLD,
+)
 from xq_branch import XQ_BRANCH_DIR
 
 st.set_page_config(page_title="台股查詢模型", page_icon="📈", layout="wide")
@@ -379,12 +387,10 @@ def load_history_with_indicators(code, period, otc):
 def load_us_overnight_signal():
     """包一層st.cache_data降低yfinance呼叫頻率——這個wrapper的快取只認自己(這幾行)的
     原始碼有沒有變,不會追蹤它呼叫的us_market.get_us_overnight_signal()內部邏輯改了沒。
-    改成只用2個指標計分那次沒有同時動到這個wrapper,結果Streamlit Cloud在process還沒
-    完全重啟前吃到舊邏輯(4指標加總,滿分±12)算出來的舊快取值,畫面顯示的燈號數量是新的
-    (2個)但淨分卻是舊公式算出來的數字(超出新的±6範圍),兩邊對不起來。之後任何一次修改
-    us_market.py的計分/資料邏輯,都要記得順手在這裡也留一點改動(哪怕只是更新這段說明),
-    強制讓快取key跟著變、逼新部署立刻重新計算一次,不要依賴TTL自然過期(這裡TTL=300秒,
-    最壞情況會顯示錯誤數字長達5分鐘)。"""
+    任何一次修改us_market.py的計分/資料邏輯(例如這次從2指標計分擴充成5指標:小道瓊/
+    那斯達克期貨/KOSPI/美元新台幣/VIX),都要記得順手在這裡也留一點改動(哪怕只是更新
+    這段說明的版本註記),強制讓快取key跟著變、逼新部署立刻重新計算一次,不要依賴TTL
+    自然過期(這裡TTL=300秒,最壞情況會顯示錯誤/舊數字長達5分鐘)。"""
     return get_us_overnight_signal()
 
 
@@ -935,7 +941,7 @@ if us_signal:
     }
     US_LIGHT_FLAT_COLOR = "#9ca3af"
 
-    def _us_light_html(label, r):
+    def _us_light_html(key, label, r):
         if not r:
             return (
                 f'<span title="{label}:資料不足" style="display:inline-block; width:11px; height:11px; '
@@ -944,18 +950,27 @@ if us_signal:
         if r["change_pct"] == 0:
             color, detail = US_LIGHT_FLAT_COLOR, "持平"
         else:
-            sign = "up" if r["change_pct"] > 0 else "down"
+            # 燈號顏色反映「對台股的方向」(可能跟自己漲跌方向相反,見INVERTED_SYMBOLS),
+            # 這樣紅綠點才能跟旁邊淨分badge的紅漲綠跌是同一套語意,一眼掃過去就是一個
+            # 一致的故事,不用逐個換算反向指標
+            sign = "up" if effective_sign(key, r["change_pct"]) > 0 else "down"
             strength = r.get("strength") or "普通"
             color = US_LIGHT_COLORS[(sign, strength)]
-            detail = f"{r['change_pct']:+.2f}%" + (f"({r['strength']})" if r.get("strength") else "")
+            inv_note = ""
+            if key in INVERTED_SYMBOLS:
+                inv_note = ",對台股偏空" if r["change_pct"] > 0 else ",對台股偏多"
+            detail = f"{r['change_pct']:+.2f}%" + (f"({r['strength']})" if r.get("strength") else "") + inv_note
         return (
             f'<span title="{label}:{detail}" style="display:inline-block; width:11px; height:11px; '
             f'border-radius:50%; background:{color}; margin-right:6px; vertical-align:middle;"></span>'
         )
 
-    def _us_stat_html(label, r, show_value=False):
+    def _us_stat_html(key, label, r, show_value=False):
         if not r:
             return f'<div class="stat-item"><div class="label">{label}</div><div class="value">—</div></div>'
+        # 這裡的箭頭/顏色維持顯示「自己實際的漲跌」(跟其他報價卡一致的紅漲綠跌),不是
+        # 換算過的「對台股方向」——換算方向另外用一行文字附註(inverted_html),不跟顏色
+        # 混在一起,避免箭頭朝上卻用綠色這種視覺上自相矛盾的畫面
         arrow = "▲" if r["change_pct"] > 0 else ("▼" if r["change_pct"] < 0 else "▬")
         color = "var(--tw-up)" if r["change_pct"] > 0 else ("var(--tw-down)" if r["change_pct"] < 0 else "#9ca3af")
         strength = r.get("strength")
@@ -965,26 +980,32 @@ if us_signal:
             if strength
             else ""
         )
-        # show_value:小道瓊/那斯達克期貨額外顯示實際指數點位,不然使用者只看得到%數,
-        # 不知道漲跌的實際數值——費半/ADR只給參考用,維持單純顯示%不加這個
+        # show_value:計分指標額外顯示實際數值(指數點位/匯率/VIX點位),不然使用者只看得到
+        # %數,不知道漲跌的實際數值——費半/ADR只給參考用,維持單純顯示%不加這個
         value_html = (
             f' <span style="font-size:0.72rem; color:#8b93a7; font-weight:500;">・{r["close"]:,.2f}</span>'
             if show_value
             else ""
         )
+        inverted_html = ""
+        if key in INVERTED_SYMBOLS and r["change_pct"] != 0:
+            inverted_html = (
+                ' <span style="font-size:0.7rem; color:#8b93a7;">(對台股'
+                + ("偏空" if r["change_pct"] > 0 else "偏多")
+                + ")</span>"
+            )
         return (
             f'<div class="stat-item"><div class="label">{label}(收{r["asof"][:10]})</div>'
-            f'<div class="value" style="color:{color}">{arrow} {r["change_pct"]:+.2f}%{strength_html}{value_html}</div></div>'
+            f'<div class="value" style="color:{color}">{arrow} {r["change_pct"]:+.2f}%{strength_html}{value_html}{inverted_html}</div></div>'
         )
 
     stat_items = "".join(
-        _us_stat_html(label, us_signal[key], show_value=(key in SCORE_SYMBOLS))
+        _us_stat_html(key, label, us_signal[key], show_value=(key in SCORE_SYMBOLS))
         for key, (_, label) in US_MARKET_SYMBOLS.items()
     )
-    # 燈號圓點只給計入淨分的兩個指標(小道瓊/那斯達克期貨)——費半/ADR不計分,旁邊放
-    # 燈號會讓人誤以為4個都算進淨分裡
+    # 燈號圓點只給計入淨分的5個指標——費半/ADR不計分,旁邊放燈號會讓人誤以為全部都算進淨分裡
     light_items = "".join(
-        _us_light_html(label, us_signal[key])
+        _us_light_html(key, label, us_signal[key])
         for key, (_, label) in US_MARKET_SYMBOLS.items()
         if key in SCORE_SYMBOLS
     )
@@ -1066,7 +1087,7 @@ if us_signal:
     st.markdown(
         f"""
         <div class="quote-card">
-            <div class="quote-symbol">🌙 美股夜盤連動指標</div>
+            <div class="quote-symbol">🌐 全球連動強弱指標</div>
             <div class="quote-price-row">
                 <div class="quote-badge {us_badge_class}">{us_badge_text}</div>
                 <div>{light_items}</div>
@@ -1081,13 +1102,18 @@ if us_signal:
         unsafe_allow_html=True,
     )
     st.caption(
-        "小道瓊/那斯達克期貨(YM=F/NQ=F)近24小時交易,涵蓋最新夜盤走勢,額外附實際指數點位;"
-        "費半(^SOX)、台積電ADR(TSM)是美股現貨收盤價,只顯示漲跌幅供參考、不計入淨分。"
-        "「強/普通/弱」是今天漲跌幅度跟自己近20日平均單日波動的比較,不是固定的絕對門檻。"
-        "淨分只由小道瓊/那斯達克期貨依強弱加權(弱1分/普通2分/強3分)後加總得出的多空分數,"
-        f"範圍 ±{SCORE_MAX},橫條顯示淨分離兩端滿分有多遠,越極端代表訊號越一致越強烈。"
-        "badge旁邊2個燈號依序對應小道瓊期貨/那斯達克期貨(這兩個才計分),顏色深淺=強弱、"
-        "紅漲綠跌(hover可看細節)。純觀察參考,不是下單訊號。"
+        "小道瓊/那斯達克期貨(YM=F/NQ=F)近24小時交易,涵蓋最新夜盤走勢;韓國KOSPI(^KS11)"
+        "是同一個交易日已經開盤的亞洲市場,產業結構跟台灣接近;美元/新台幣(TWD=X)反映外資"
+        "資金流向;VIX恐慌指數(^VIX)反映全球風險偏好。這5個都額外附實際數值(指數點位/"
+        "匯率/VIX點位),不只有%數。美元新台幣、VIX是「反向指標」——自己漲對台股反而是偏空"
+        "訊號(新台幣貶值=外資匯出、VIX漲=避險情緒濃厚),已經在燈號顏色/淨分方向裡換算過,"
+        "不用自己心算。費半(^SOX)、台積電ADR(TSM)是美股現貨收盤價,只顯示漲跌幅供參考、"
+        "不計入淨分。「強/普通/弱」是今天漲跌幅度跟自己近20日平均單日波動的比較,不是固定的"
+        "絕對門檻。淨分是這5個指標依強弱加權(弱1分/普通2分/強3分,已換算反向指標的方向)後"
+        f"加總得出的多空分數,範圍 ±{SCORE_MAX},橫條顯示淨分離兩端滿分有多遠,越極端代表"
+        "訊號越一致越強烈。badge旁邊5個燈號依序對應這5個計分指標,顏色代表對台股的方向"
+        "(紅偏多/綠偏空,反向指標已換算)、深淺=強弱(hover可看細節)。純觀察參考,不是"
+        "下單訊號。"
     )
     st.caption(
         "🎯 櫃買指數位階:「今日」是現價在今天高低區間的哪個位置(TWSE即時報價,每次頁面"
