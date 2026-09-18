@@ -3,8 +3,10 @@
 執行方式: streamlit run app.py
 """
 
+import base64
 import json
 import time as time_module
+from pathlib import Path
 
 import pandas as pd
 import yfinance as yf
@@ -37,7 +39,20 @@ from us_market import (
 )
 from xq_branch import XQ_BRANCH_DIR
 
-st.set_page_config(page_title="台股查詢模型", page_icon="📈", layout="wide")
+LOGO_PATH = Path(__file__).parent / "assets" / "logo.png"
+st.set_page_config(page_title="台股查詢模型", page_icon=str(LOGO_PATH), layout="wide")
+
+
+@st.cache_data
+def _load_logo_img_tag() -> str:
+    """把Logo讀成base64內嵌<img>標籤,取代原本標題文字前面的📈 emoji——用於直接嵌在
+    markdown/HTML字串裡(st.markdown的f-string),跟st.image()那種需要獨立版面位置的用法
+    不同,這裡要跟文字同一行。圖檔不會變,用@st.cache_data包住只讀一次檔案。"""
+    b64 = base64.b64encode(LOGO_PATH.read_bytes()).decode()
+    return f'<img src="data:image/png;base64,{b64}" style="height:1.3rem; vertical-align:-4px; margin-right:0.3rem;">'
+
+
+LOGO_IMG_TAG = _load_logo_img_tag()
 
 CSS = """
 <style>
@@ -171,7 +186,7 @@ def _auto_refresh_tick():
 
 
 with st.sidebar:
-    st.markdown("### 📈 台股查詢模型")
+    st.markdown(f"### {LOGO_IMG_TAG} 台股查詢模型", unsafe_allow_html=True)
     st.caption("即時報價・技術指標・做多訊號")
     st.divider()
     auto_refresh = st.checkbox("🔄 自動刷新(每60秒)", value=True,
@@ -898,7 +913,7 @@ name = INDEX_DISPLAY_NAMES[code] if code in INDEX_DISPLAY_NAMES else load_name(c
 
 st.markdown(
     f"""<div class="app-header">
-        <h1>📈 台股查詢模型 <span class="badge-gold">TW MARKET</span></h1>
+        <h1>{LOGO_IMG_TAG} 台股查詢模型 <span class="badge-gold">TW MARKET</span></h1>
         <div class="sub">即時報價・技術指標・做多訊號 — 學習用途,非投資建議</div>
     </div>""",
     unsafe_allow_html=True,

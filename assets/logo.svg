@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 400" role="img">
+  <title>台股查詢模型 Logo</title>
+  <desc>深藏青底色搭配深金到淺金的六切面鑽石圖形,左上最亮右下最暗模擬光源反射</desc>
+  <rect x="40" y="40" width="320" height="320" rx="64" fill="#0e1223"/>
+  <polygon points="173,78 200,78 200,172 132,127" fill="#f5c948" stroke="#0e1223" stroke-width="2"/>
+  <polygon points="132,127 101,172 200,172" fill="#eab308" stroke="#0e1223" stroke-width="2"/>
+  <polygon points="227,78 200,78 200,172 268,127" fill="#eab308" stroke="#0e1223" stroke-width="2"/>
+  <polygon points="268,127 299,172 200,172" fill="#c9960c" stroke="#0e1223" stroke-width="2"/>
+  <polygon points="101,172 200,172 200,302" fill="#eab308" stroke="#0e1223" stroke-width="2"/>
+  <polygon points="200,172 299,172 200,302" fill="#c9960c" stroke="#0e1223" stroke-width="2"/>
+</svg>
