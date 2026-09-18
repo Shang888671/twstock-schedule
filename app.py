@@ -180,26 +180,58 @@ with st.sidebar:
     # 一直用系統預設值跑——使用者明確要求「要有勾選才能啟動警示設定,沒有預設」,改成
     # 這個checkbox現在是「整個急殺警示功能」的總開關,不勾就完全不顯示、也不會多打即時
     # 報價API去輪詢,不是「用預設值默默跑在背景」。
+    #
+    # 門檻數字改成「每檔股票/指數各自分開記」——使用者發現原本3個門檻是綁在側邊欄的全域
+    # 設定,不管切換到哪一檔股票都是同一組數字,反應「好像會套用在全部股票」,明確要求
+    # 改成分開記。
+    #
+    # **不能只靠「key依股票代號變化」這招**——實測過改成 key=f"...{target_key}" 之後,
+    # 切到別的股票再切回來,原本設定的值竟然又變回預設值了。原因是 Streamlit 的規則是
+    # 「一個 widget key 如果這次 rerun 沒有被實際建立(instantiate),它在 session_state
+    # 裡的值就會被清掉」——換股票的當下,舊股票那組 key 的 number_input 沒有被畫出來,
+    # 值就跟著沒了,不是像一般 session_state 那樣切走再切回來還留著。
+    #
+    # 改成自己手動維護一個 `_reversal_thresholds` dict(key是target_key,不受widget
+    # 掛載/卸載影響,是一般session_state,不會被清),widget本身用固定的key,只在偵測到
+    # 「目標換了」的時候,才在建立widget之前手動把session_state裡widget的值換成這個新
+    # 目標存的設定(沒存過就用全域預設),widget渲染完之後把目前的值寫回dict存起來。
+    target_key = f"{code}_{otc}"
+    thresholds_store = st.session_state.setdefault("_reversal_thresholds", {})
+    if st.session_state.get("_reversal_target_key") != target_key:
+        saved = thresholds_store.get(target_key, {})
+        st.session_state["pullback_warn_pct_widget"] = saved.get("warn", reversal_alert.PULLBACK_WARN_PCT)
+        st.session_state["pullback_severe_pct_widget"] = saved.get("severe", reversal_alert.PULLBACK_SEVERE_PCT)
+        st.session_state["fast_drop_severe_pct_widget"] = saved.get("fast", reversal_alert.FAST_DROP_SEVERE_PCT)
+        st.session_state["_reversal_target_key"] = target_key
+
     with st.expander("⚙️ 盤中急殺警示設定"):
         st.caption("距今日高點拉回%、或近5分鐘變動%,任一超過門檻就升級警示。預設不啟用,"
-                   "勾選下面的開關才會顯示警示卡片、開始輪詢即時報價。")
+                   "勾選下面的開關才會顯示警示卡片、開始輪詢即時報價。門檻數字每檔股票/"
+                   "指數分開記憶,換一檔查詢不會互相影響。")
         enable_reversal_alert = st.checkbox(
             "啟用盤中急殺警示", value=False,
             help="不勾選就完全不顯示急殺警示卡片,也不會多打TWSE即時報價API;"
-                 "勾選後才會用下面填的門檻開始監控。",
+                 "勾選後才會用下面填的門檻開始監控。這個開關是全域的,不分股票。",
         )
         custom_pullback_warn_pct = st.number_input(
             "拉回警示門檻(%)", min_value=0.1, max_value=20.0,
-            value=reversal_alert.PULLBACK_WARN_PCT, step=0.1, disabled=not enable_reversal_alert,
+            step=0.1, disabled=not enable_reversal_alert, key="pullback_warn_pct_widget",
         )
         custom_pullback_severe_pct = st.number_input(
             "急殺警示門檻(%,距高點拉回)", min_value=0.1, max_value=30.0,
-            value=reversal_alert.PULLBACK_SEVERE_PCT, step=0.1, disabled=not enable_reversal_alert,
+            step=0.1, disabled=not enable_reversal_alert, key="pullback_severe_pct_widget",
         )
         custom_fast_drop_severe_pct = st.number_input(
             "急殺警示門檻(%,近5分鐘變動)", min_value=0.1, max_value=10.0,
-            value=reversal_alert.FAST_DROP_SEVERE_PCT, step=0.1, disabled=not enable_reversal_alert,
+            step=0.1, disabled=not enable_reversal_alert, key="fast_drop_severe_pct_widget",
         )
+        # 每次重跑都把目前3個widget的值同步寫回目前目標的儲存格——使用者剛編輯完的新值
+        # (不管是不是這次剛換目標)都要存起來,下次換回這檔才找得到。
+        thresholds_store[target_key] = {
+            "warn": custom_pullback_warn_pct,
+            "severe": custom_pullback_severe_pct,
+            "fast": custom_fast_drop_severe_pct,
+        }
         # 用 st.empty() 佔位再每次重跑都明確寫入/清空,不要單純寫「if 條件: st.warning(...)」——
         # 實測發現這種寫法在使用者把門檻設定「錯誤→改對→改回錯誤」來回切換時,第二次進入
         # 錯誤狀態時警示文字不會重新跳出來(卡住),要用 st.empty() 佔位子每次都強制整個替換
