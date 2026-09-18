@@ -998,7 +998,7 @@ if us_signal:
         # show_value:計分指標額外顯示實際數值(指數點位/匯率/VIX點位),不然使用者只看得到
         # %數,不知道漲跌的實際數值——費半/ADR只給參考用,維持單純顯示%不加這個
         value_html = (
-            f' <span style="font-size:0.72rem; color:#8b93a7; font-weight:500;">・{r["close"]:,.2f}</span>'
+            f' <span style="font-size:0.72rem; color:var(--accent-gold); font-weight:500;">・{r["close"]:,.2f}</span>'
             if show_value
             else ""
         )
