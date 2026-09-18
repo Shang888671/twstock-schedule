@@ -510,13 +510,21 @@ def _build_condition_badge_html(label: str, passed: bool) -> str:
 
 
 def _participation_score_color(score100: float) -> str:
-    """0~100參與度分數(熱絡/普通/清淡)對應的顏色,集中一處給gauge/即時分數/昨晚分數
-    三個地方共用,避免各自複製貼上同一組門檻+顏色,以後要調色只要改這裡一處。"""
+    """0~100參與度分數(熱絡/普通/清淡)對應的顏色,集中一處給gauge/即時分數/昨晚分數/
+    強弱badge共用,避免各自複製貼上同一組門檻+顏色,以後要調色只要改這裡一處。"""
     if score100 >= 75:
         return "#f97316"
     if score100 <= 25:
         return "#38bdf8"
     return "#9ca3af"
+
+
+def _participation_badge_html(text: str, score100: float | None) -> str:
+    """強弱badge(熱絡/普通/清淡)改依分數上色,不要固定都是灰色——沿用
+    _participation_score_color() 同一套門檻,跟旁邊的大分數數字/量表指針是同一套顏色語言。
+    分數拿不到(舊快取字典缺欄位等情況)才退回中性灰。"""
+    color = _participation_score_color(score100) if score100 is not None else "#9ca3af"
+    return f'<div class="quote-badge" style="color:{color}; background:{color}1f;">{text}</div>'
 
 
 def _build_level_badges_html(levels: list, current_price: float, color: str) -> str:
@@ -1216,10 +1224,12 @@ if night_signal:
             '<div style="margin-top:1rem; padding-top:0.8rem; border-top:1px solid rgba(255,255,255,0.08);">'
             '<div class="quote-symbol" style="font-size:0.85rem;">⚡ 夜盤即時參與度評分</div>'
             f'<div class="quote-price-row"><div class="quote-price" style="font-size:2.4rem; color:{p_color};">{p_score}</div>'
-            f'<div class="quote-badge badge-flat">{live_participation["label"]}</div>'
-            f'<div style="font-size:0.8rem; color:#8b93a7;">{live_participation["symbol_id"]} {p_price_str} {p_chg_str}'
+            f'{_participation_badge_html(live_participation["label"], p_score)}</div>'
+            f'<div style="font-size:0.85rem; color:#8b93a7; margin-top:0.2rem;">'
+            f'<span style="color:var(--accent-gold); font-weight:700; font-size:0.95rem;">'
+            f'{live_participation["symbol_id"]} {p_price_str} {p_chg_str}</span>'
             f'・累積{live_participation["live_volume"]:,}口(已開盤{live_participation["elapsed_minutes"]:.0f}分鐘,'
-            f'正常步調基準約{live_participation["expected_volume"]:,.0f}口)</div></div>'
+            f'正常步調基準約{live_participation["expected_volume"]:,.0f}口)</div>'
             f"{p_gauge_html}</div>"
         )
     elif live_participation.get("reason") == "closed":
@@ -1253,8 +1263,9 @@ if night_signal:
             ctime_str = f"{ctime_raw[:2]}:{ctime_raw[2:4]}:{ctime_raw[4:6]}" if ctime_raw and len(ctime_raw) == 6 else "—"
             freshness_note = "" if current_quote["is_live"] else "・非夜盤成交,日盤收盤定住的價格"
             quote_line_html = (
-                f'<div style="font-size:0.78rem; color:#8b93a7; margin-top:0.4rem;">'
-                f'目前指數 {current_quote["symbol_id"]} {current_quote["last_price"]:,.0f} {cq_chg_str}'
+                f'<div style="font-size:0.85rem; color:#8b93a7; margin-top:0.4rem;">'
+                f'目前指數 <span style="color:var(--accent-gold); font-weight:700; font-size:0.95rem;">'
+                f'{current_quote["symbol_id"]} {current_quote["last_price"]:,.0f} {cq_chg_str}</span>'
                 f'(資料時間{ctime_str}{freshness_note})</div>'
             )
         if last_night_score is not None:
@@ -1265,19 +1276,20 @@ if night_signal:
                 if short_score100 is not None
                 else ""
             )
-            # 今晚是不是真的還會開夜盤——週五~週日晚上TAIFEX不開夜盤(週五晚上接的是
-            # 週六,不是交易日),這幾天不能說「今晚15:00開盤後換成即時評分」,不然講的話
-            # 會兌現不了,使用者等到15:00還是看不到即時評分,會誤以為功能壞了
+            # 今晚是不是真的還會開夜盤——週六~週日晚上TAIFEX不開夜盤(週六接的是週日、
+            # 週日接的是週一才有開盤但週日晚上本身不算),這兩天不能說「今晚15:00開盤後
+            # 換成即時評分」,不然講的話會兌現不了,使用者等到15:00還是看不到即時評分,
+            # 會誤以為功能壞了。週一~週五晚上都正常開盤(見night_session.py的說明)。
             next_session_note = (
                 "今晚15:00開盤後這裡會換成盤中即時評分。"
                 if night_session.has_night_session_tonight()
-                else "今晚(週五~週日)沒有夜盤,下一個夜盤要等到下週一15:00開盤。"
+                else "今晚(週六~週日)沒有夜盤,下一個夜盤要等到下週一15:00開盤。"
             )
             live_block_html = (
                 '<div style="margin-top:1rem; padding-top:0.8rem; border-top:1px solid rgba(255,255,255,0.08);">'
                 f'<div class="quote-symbol" style="font-size:0.85rem;">📅 昨晚({night_signal["date"]})最終評分(收盤結算,非步調比較)</div>'
                 f'<div class="quote-price-row"><div class="quote-price" style="font-size:2.4rem; color:{ln_color};">{last_night_score}</div>'
-                f'<div class="quote-badge badge-flat">{strength_text}</div></div>'
+                f'{_participation_badge_html(strength_text, last_night_score)}</div>'
                 f"{quote_line_html}"
                 f"{_build_participation_gauge_html(last_night_score)}"
                 f'<div style="font-size:0.78rem; color:#8b93a7; margin-top:0.4rem;">{short_score_note}{next_session_note}</div></div>'
@@ -1300,7 +1312,11 @@ if night_signal:
     # 顯示(這個坑先前在 _build_score_gauge_html 也踩過一次,這次是新的變形:不是「多行HTML」
     # 而是「單一個可能是空字串的{變數}獨占一行」也會觸發同樣的問題)。改成把整排badge/整排
     # stat-item先組成一行完整字串,再整個當一個佔位符塞進樣板,樣板裡每一行都保證有實際內容。
-    short_badge_html = f'<div class="quote-badge badge-flat">{short_badge_str}</div>' if short_badge_str else ""
+    short_badge_html = (
+        _participation_badge_html(short_badge_str, night_signal.get("short_score100"))
+        if short_badge_str
+        else ""
+    )
     short_avg_volume = night_signal.get("short_avg_volume")
     short_stat_html = (
         f'<div class="stat-item"><div class="label">近{night_signal.get("short_window_days")}夜均量</div>'
@@ -1309,7 +1325,7 @@ if night_signal:
         else ""
     )
     badge_row_html = (
-        f'<div class="quote-badge badge-flat">{strength_text}{ratio_str}</div>'
+        f'{_participation_badge_html(f"{strength_text}{ratio_str}", long_score100)}'
         f'<div class="quote-badge {chg_badge_class}">{chg_str}</div>'
         f"{short_badge_html}"
     )
