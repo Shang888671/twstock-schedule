@@ -835,6 +835,14 @@ _CHART_HTML_TEMPLATE = """
   // 都有,同樣offset在不同區間對應的實際留白像素差很多,所以改用timeToCoordinate()直接
   // 量出「最新一根K棒實際畫在哪個x像素」,徽章的位置一定要比這個x再往右緣退開一段安全距離,
   // 不管使用者選什麼時間區間/怎麼縮放都保證不會蓋到任何一根K棒。
+  //
+  // **第四次修正**:上一版只確保「徽章容器的右緣」跟最新K棒有安全距離,卻忘了徽章本身有寬度
+  // 往左延伸——right:0是徽章的「右邊界」,實際文字框的「左邊界」還要再往左扣掉文字寬度(例如
+  // 「阻力2 47332.44」字數多、框更寬),沒扣到這段寬度的話徽章左半部還是會蓋到最新K棒左邊
+  // 那幾根K棒(加權指數這種數字位數多、徽章特別寬的情況特別明顯)。改成:先把徽章畫進DOM量出
+  // 實際寬度(取所有徽章裡最寬的那個),再用「最新K棒x位置 + 該寬度」反推容器要退開多少,
+  // 兩個限制(軸不能蓋到/K棒不能蓋到)同時滿足;真的兩者衝突到擠不下時,優先保證不蓋到K棒
+  // (資料本體比軸刻度重要),寧可稍微貼近軸一點。
   const rightScale = chart.priceScale('right');
   const levelsBox = document.createElement('div');
   levelsBox.id = 'tv-levels';
@@ -845,18 +853,6 @@ _CHART_HTML_TEMPLATE = """
   const LEVEL_AXIS_GAP = 4;
 
   function renderLevelBadges() {
-    const axisWidth = (rightScale && typeof rightScale.width === 'function') ? rightScale.width() : 60;
-    let rightPx = axisWidth + LEVEL_AXIS_GAP;
-
-    if (DATA.candles.length) {
-      const lastX = chart.timeScale().timeToCoordinate(DATA.candles[DATA.candles.length - 1].time);
-      if (lastX !== null && lastX !== undefined) {
-        const neededPx = container.clientWidth - lastX + LEVEL_AXIS_GAP;
-        if (neededPx > rightPx) rightPx = neededPx;
-      }
-    }
-    levelsBox.style.right = rightPx + 'px';
-
     const levels = [];
     DATA.supports.forEach(function (s, i) {
       levels.push({ price: s.price, color: THEME.support, text: '支撐' + (i + 1) + ' ' + s.price.toFixed(2) });
@@ -877,11 +873,32 @@ _CHART_HTML_TEMPLATE = """
       }
     }
 
+    levelsBox.style.right = '0px';
     levelsBox.innerHTML = positioned.map(function (lv) {
       return `<div style="position:absolute; top:${lv.y - 9}px; right:0; background:${lv.color}; ` +
         `color:#0b0f1a; font:11px/1.4 Inter,'Noto Sans TC',sans-serif; font-weight:700; ` +
         `padding:1px 7px; border-radius:4px; white-space:nowrap;">${lv.text}</div>`;
     }).join('');
+
+    let maxBadgeWidth = 0;
+    Array.from(levelsBox.children).forEach(function (el) {
+      if (el.offsetWidth > maxBadgeWidth) maxBadgeWidth = el.offsetWidth;
+    });
+
+    const axisWidth = (rightScale && typeof rightScale.width === 'function') ? rightScale.width() : 60;
+    const minRightForAxis = axisWidth + LEVEL_AXIS_GAP;
+
+    let maxRightForCandles = Infinity;
+    if (DATA.candles.length && maxBadgeWidth > 0) {
+      const lastX = chart.timeScale().timeToCoordinate(DATA.candles[DATA.candles.length - 1].time);
+      if (lastX !== null && lastX !== undefined) {
+        maxRightForCandles = container.clientWidth - maxBadgeWidth - lastX - LEVEL_AXIS_GAP;
+      }
+    }
+
+    let rightPx = minRightForAxis <= maxRightForCandles ? minRightForAxis : maxRightForCandles;
+    if (rightPx < 0) rightPx = 0;
+    levelsBox.style.right = rightPx + 'px';
   }
 
   renderLevelBadges();
