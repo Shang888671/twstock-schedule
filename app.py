@@ -137,7 +137,7 @@ html, body, [class*="css"] {
 st.markdown(CSS, unsafe_allow_html=True)
 
 
-AUTO_REFRESH_SECONDS = 60
+AUTO_REFRESH_SECONDS = 20
 
 # 這次腳本執行「開始前」記錄的上一次執行時間——不管上次是使用者互動、計時器、還是任何其他
 # 原因觸發的重跑都算。用意見下面 _auto_refresh_tick() 的說明(側邊欄「⚙️盤中急殺警示設定」
@@ -148,11 +148,13 @@ st.session_state["_last_script_run_time"] = time_module.time()
 
 @st.fragment(run_every=AUTO_REFRESH_SECONDS)
 def _auto_refresh_tick():
-    """純計時器,不畫任何東西——每60秒觸發一次 st.rerun()(預設 scope="app",整頁重跑,
+    """純計時器,不畫任何東西——每20秒觸發一次 st.rerun()(預設 scope="app",整頁重跑,
     不是只重跑這個 fragment 自己),讓各區塊的 st.cache_data 過期後能盡快自動撈到新資料,
-    不用使用者手動重新整理瀏覽器。60秒間隔選這個數字是因為大部分快取TTL是300秒(5分鐘)、
-    夜盤是1800秒——刷新得比TTL短很多也拿不到新資料,只是白白重繪整頁;60秒是「感覺得到
-    在動、又不浪費」的折衷點。
+    不用使用者手動重新整理瀏覽器。原本是60秒,使用者覺得太慢、參考fly.io背景監控
+    (alert_monitor.py,15秒輪詢一次)改成20秒——大部分快取TTL還是300秒(5分鐘)、夜盤是
+    1800秒沒有跟著變動,這些區塊會有多次重繪拿不到新資料的浪費,但換來的是真正即時的部分
+    (個股/大盤/櫃買指數的TWSE MIS報價、K線快取已對齊縮到20秒、台指期夜盤即時參與度評分)
+    更新感受明顯變快,使用者已權衡過這個取捨、接受多打幾次API換即時感。
 
     用 session_state 記錄上次真的觸發 rerun 的時間點,靠這個判斷「這次呼叫是不是計時器到期
     才觸發的」——如果不這樣擋,這個 function 每次被呼叫(包括使用者互動造成的全頁重跑,
@@ -189,8 +191,8 @@ with st.sidebar:
     st.markdown(f"### {LOGO_IMG_TAG} 台股查詢模型", unsafe_allow_html=True)
     st.caption("即時報價・技術指標・做多訊號")
     st.divider()
-    auto_refresh = st.checkbox("🔄 自動刷新(每60秒)", value=True,
-                                help="每60秒自動重新整理頁面。各區塊資料實際更新頻率仍取決於"
+    auto_refresh = st.checkbox(f"🔄 自動刷新(每{AUTO_REFRESH_SECONDS}秒)", value=True,
+                                help=f"每{AUTO_REFRESH_SECONDS}秒自動重新整理頁面。各區塊資料實際更新頻率仍取決於"
                                      "各自的快取有效期(大部分5分鐘,夜盤30分鐘),這個開關只是"
                                      "確保快取過期後不用手動重整就能盡快看到新資料。")
     if auto_refresh:
@@ -391,7 +393,7 @@ def load_name(code, otc):
     return f"{english_name}({chinese_name})" if chinese_name else english_name
 
 
-@st.cache_data(ttl=60)  # 對齊AUTO_REFRESH_SECONDS(60秒)——使用者要看漲跌判斷,K線/均線/
+@st.cache_data(ttl=AUTO_REFRESH_SECONDS)  # 對齊AUTO_REFRESH_SECONDS——使用者要看漲跌判斷,K線/均線/
                         # 支撐阻力這些跟著自動刷新一起變新,不要卡在舊的5分鐘快取裡沒更新
 def load_history_with_indicators(code, period, otc):
     hist = get_history(code, period=period, otc=otc)
@@ -1674,12 +1676,35 @@ with tab_ai:
     )
     if otc:
         st.caption("三大法人資料只支援上市股票,上櫃股票無法檢查此訊號。")
-    elif st.button("🔍 檢查做多訊號"):
-        with st.spinner("查詢籌碼資料中..."):
-            try:
-                from signals import evaluate_long_signal
+    else:
+        if st.button("🔍 檢查做多訊號"):
+            # 結果存 session_state、渲染邏輯搬到按鈕區塊外面每次都執行——跟🚦條件達成燈號/
+            # 💪RS排行同樣的坑:st.button()只在按下當次回傳True,下一次不管什麼原因(包括
+            # 自動刷新計時器)觸發的rerun都會讓結果消失。這裡單股查詢通常很快、不會超過
+            # AUTO_REFRESH_SECONDS,但一樣加_long_task_running防護,避免查詢中途剛好被
+            # 計時器插隊中斷。
+            st.session_state["_long_task_running"] = True
+            with st.spinner("查詢籌碼資料中..."):
+                try:
+                    from signals import evaluate_long_signal
 
-                sig = evaluate_long_signal(code, otc=otc)
+                    sig = evaluate_long_signal(code, otc=otc)
+                    st.session_state["_long_signal_result"] = {
+                        "mode": "result", "sig": sig, "code": code, "otc": otc,
+                    }
+                except Exception as e:
+                    st.session_state["_long_signal_result"] = {
+                        "mode": "error", "message": str(e), "code": code, "otc": otc,
+                    }
+                finally:
+                    st.session_state["_long_task_running"] = False
+
+        long_signal_state = st.session_state.get("_long_signal_result")
+        if long_signal_state and long_signal_state["code"] == code and long_signal_state["otc"] == otc:
+            if long_signal_state["mode"] == "error":
+                st.error(f"查詢失敗:{long_signal_state['message']}")
+            else:
+                sig = long_signal_state["sig"]
                 n_conditions = 3 if sig["branch_available"] else 2
                 if sig["long_signal"]:
                     st.success(f"✅ 符合做多訊號——{n_conditions} 個條件同時成立")
@@ -1730,8 +1755,6 @@ with tab_ai:
                         "可在 XQ 匯出「個股進階籌碼→權證券商→買方TOP15→類型:認購」CSV,"
                         f"存到 xq_branch_data/ 資料夾、檔名開頭是股票代號(例如 {code}xxx.csv)。"
                     )
-            except Exception as e:
-                st.error(f"查詢失敗:{e}")
     st.markdown("</div>", unsafe_allow_html=True)
 
     st.markdown('<div class="section-card">', unsafe_allow_html=True)
@@ -1853,6 +1876,10 @@ with tab_scan:
         "這是跨股票的批次掃描,跟上面「做多訊號」分頁裡針對單一股票的做多訊號檢查是分開的功能。"
     )
     if st.button("🔎 開始掃描"):
+        # 結果存session_state、渲染搬到按鈕區塊外——跟🚦條件達成燈號/💪RS排行同樣的坑,
+        # 這裡掃描整個xq_branch_data/資料夾檔案數多時可能不快,加_long_task_running防護
+        # 避免被auto_refresh計時器中途打斷。
+        st.session_state["_long_task_running"] = True
         with st.spinner("掃描中..."):
             try:
                 from xq_branch import scan_known_branch_buying
@@ -1869,17 +1896,30 @@ with tab_scan:
                     else:
                         unverified.append(h["code"])
 
-                if not hits:
-                    st.info("目前沒有任何股票命中已知隔日沖大戶分點買超。")
-                else:
-                    st.success(f"共 {len(hits)} 檔命中")
-                    for h in hits:
-                        hit_desc = "、".join(f"{x['known_name']}({x['net_buy_wan']:,.0f}萬)" for x in h["known_branch_hits"])
-                        st.markdown(f"**{h['code']} {h['name']}** — {hit_desc}（資料日期 {h['asof']}，檔案:{h['file']}）")
-                if unverified:
-                    st.caption(f"已略過 {len(unverified)} 個代號對不上真實股票的檔案:{'、'.join(unverified)}")
+                st.session_state["_branch_scan_result"] = {
+                    "mode": "result", "hits": hits, "unverified": unverified,
+                }
             except Exception as e:
-                st.error(f"掃描失敗:{e}")
+                st.session_state["_branch_scan_result"] = {"mode": "error", "message": str(e)}
+            finally:
+                st.session_state["_long_task_running"] = False
+
+    branch_scan_state = st.session_state.get("_branch_scan_result")
+    if branch_scan_state:
+        if branch_scan_state["mode"] == "error":
+            st.error(f"掃描失敗:{branch_scan_state['message']}")
+        else:
+            hits = branch_scan_state["hits"]
+            unverified = branch_scan_state["unverified"]
+            if not hits:
+                st.info("目前沒有任何股票命中已知隔日沖大戶分點買超。")
+            else:
+                st.success(f"共 {len(hits)} 檔命中")
+                for h in hits:
+                    hit_desc = "、".join(f"{x['known_name']}({x['net_buy_wan']:,.0f}萬)" for x in h["known_branch_hits"])
+                    st.markdown(f"**{h['code']} {h['name']}** — {hit_desc}（資料日期 {h['asof']}，檔案:{h['file']}）")
+            if unverified:
+                st.caption(f"已略過 {len(unverified)} 個代號對不上真實股票的檔案:{'、'.join(unverified)}")
     st.markdown("</div>", unsafe_allow_html=True)
 
     st.markdown('<div class="section-card">', unsafe_allow_html=True)
