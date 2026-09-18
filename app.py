@@ -85,6 +85,10 @@ html, body, [class*="css"] {
 .badge-up { color: var(--tw-up); background: rgba(239,68,68,0.12); }
 .badge-down { color: var(--tw-down); background: rgba(34,197,94,0.12); }
 .badge-flat { color: #9ca3af; background: rgba(156,163,175,0.12); }
+/* 條件達成/未達成徽章——用金色(既有的強調色)代表達成,跟漲跌用的紅/綠分開,
+   避免「達成」這種跟價格方向無關的二元狀態被誤讀成漲跌訊號 */
+.badge-hit { color: var(--accent-gold); background: rgba(234,179,8,0.14); }
+.badge-miss { color: #6b7280; background: rgba(107,114,128,0.12); }
 
 .stat-row { display: flex; gap: 2.2rem; flex-wrap: wrap; }
 .stat-item .label { color: #8b93a7; font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.4px; }
@@ -138,10 +142,22 @@ def _auto_refresh_tick():
     編輯前後腳到,兩個重跑會搶著執行,可能導致使用者剛打好的新門檻值被計時器這次重跑蓋掉
     (用到的還是編輯生效前的舊值)——畫面上數字看起來有改,但警示文字/換算股價卻沒有跟著
     新數字重新判斷,就是使用者回報的「設定錯誤跳出警示後,數值會卡住」。多這道門檻確保計時器
-    重跑跟其他任何重跑之間至少間隔5秒,不會搶在使用者編輯還沒穩定生效前硬插進來。"""
+    重跑跟其他任何重跑之間至少間隔5秒,不會搶在使用者編輯還沒穩定生效前硬插進來。
+
+    第三道門檻(_long_task_running)防的是另一個坑:RS排行/批次燈號掃描這種一次要逐檔抓
+    上百檔股票資料的按鈕,運算本身動輒超過60秒——這個計時器的 st.rerun() 預設是整頁重跑
+    (scope="app"),不管使用者正在等哪個按鈕的運算跑到一半,只要60秒一到就會把還在執行中的
+    腳本直接中斷重來,算好的結果整個消失,批次越大越跑不完(股票池夠大的話永遠卡在中途)。
+    這兩個按鈕的程式碼會在開始運算前把 _long_task_running 設成True、結束後(含例外)用
+    finally清回False,這裡看到是True就先跳過這次rerun,等運算結束後下一次60秒到期就會
+    正常補上。"""
     now = time_module.time()
     last = st.session_state.get("_auto_refresh_last_tick", 0)
-    if now - last >= AUTO_REFRESH_SECONDS and now - _prev_script_run_time >= 5:
+    if (
+        now - last >= AUTO_REFRESH_SECONDS
+        and now - _prev_script_run_time >= 5
+        and not st.session_state.get("_long_task_running")
+    ):
         st.session_state["_auto_refresh_last_tick"] = now
         st.rerun()
 
@@ -156,6 +172,38 @@ with st.sidebar:
                                      "確保快取過期後不用手動重整就能盡快看到新資料。")
     if auto_refresh:
         _auto_refresh_tick()
+    keep_screen_awake = st.checkbox(
+        "🔆 螢幕保持常亮", value=False,
+        help="開著這個分頁時不讓螢幕自動變暗/鎖定,關掉這個開關或關掉分頁就恢復系統原本的省電設定。"
+             "靠瀏覽器內建的Screen Wake Lock API,不用另外裝任何東西——桌面版Chrome/Edge/最新版"
+             "Safari都支援,少數瀏覽器不支援的話就是沒作用、不會報錯。",
+    )
+    if keep_screen_awake:
+        # Screen Wake Lock API 只在使用者主動要求時才申請(這個checkbox本身就是那個要求),
+        # 拿到的鎖只在這個分頁還開著、還在前景時有效——分頁被切到背景鎖會自動釋放,所以額外
+        # 監聽visibilitychange,切回前景時重新申請一次。這段HTML每次腳本重跑(例如auto_refresh
+        # 每60秒重跑一次)都會重新插入、重新申請一次鎖,等於順便定期補鎖,不用擔心中途意外釋放
+        # 後就再也不會恢復。不支援這個API的瀏覽器會被catch住,靜默不作用,不影響其他功能。
+        components.html(
+            """
+            <script>
+            (async () => {
+                try {
+                    if (!('wakeLock' in navigator)) return;
+                    await navigator.wakeLock.request('screen');
+                    document.addEventListener('visibilitychange', async () => {
+                        if (document.visibilityState === 'visible') {
+                            try { await navigator.wakeLock.request('screen'); } catch (e) {}
+                        }
+                    });
+                } catch (err) {
+                    console.warn('螢幕常亮(Wake Lock)申請失敗,瀏覽器可能不支援或不允許:', err);
+                }
+            })();
+            </script>
+            """,
+            height=0,
+        )
     st.divider()
     query_mode = st.radio("查詢標的", ["個股", "加權指數", "櫃買指數"], horizontal=True)
     if query_mode == "個股":
@@ -403,7 +451,7 @@ def _build_participation_gauge_html(score100: float) -> str:
     刻度25/75取自 night_session.STRENGTH_WEAK_RATIO/STRENGTH_STRONG_RATIO 換算成分數
     後的位置,跟「清淡/普通/熱絡」文字標籤的分界一致。"""
     pct = max(0.0, min(100.0, score100))
-    color = "#f97316" if pct >= 75 else ("#38bdf8" if pct <= 25 else "#9ca3af")
+    color = _participation_score_color(pct)
     ticks = [(0, "清淡0"), (25, "25"), (50, "普通50"), (75, "75"), (100, "熱絡100")]
     ticks_html = "".join(f'<div style="position:absolute; left:{t}%; top:-3px; bottom:-3px; width:1px; background:rgba(255,255,255,{0.35 if t in (25, 75) else 0.18});"></div>' for t, _ in ticks)
     labels_html = "".join(f'<span style="position:absolute; left:{t}%; transform:translateX({"0%" if t == 0 else ("-100%" if t == 100 else "-50%")}); white-space:nowrap;">{lbl}</span>' for t, lbl in ticks)
@@ -416,6 +464,43 @@ def _build_participation_gauge_html(score100: float) -> str:
         f'<div style="position:relative; height:1rem; font-size:0.68rem; color:#6b7280; margin-top:3px;">{labels_html}</div>'
         "</div>"
     )
+
+
+def _build_condition_badge_html(label: str, passed: bool) -> str:
+    """🚦條件達成燈號用的狀態徽章,取代原本的🟢/🔴 emoji——emoji在不同系統/字型下顏色不受控,
+    跟頁面其他地方統一用CSS色點+文字的視覺語言(見quote-badge)不一致。用金色代表達成、
+    灰色代表未達成(badge-hit/badge-miss,定義在CSS裡),不用紅/綠是為了不跟「漲跌方向」的
+    顏色語意混在一起——這裡是「條件成立與否」,不是多空訊號。"""
+    badge_class = "badge-hit" if passed else "badge-miss"
+    status_text = "達成" if passed else "未達成"
+    return (
+        f'<div style="font-size:0.8rem; color:#8b93a7; margin-bottom:0.3rem; min-height:2.2rem;">{label}</div>'
+        f'<span class="quote-badge {badge_class}" style="font-size:0.82rem; padding:0.2rem 0.6rem;">{status_text}</span>'
+    )
+
+
+def _participation_score_color(score100: float) -> str:
+    """0~100參與度分數(熱絡/普通/清淡)對應的顏色,集中一處給gauge/即時分數/昨晚分數
+    三個地方共用,避免各自複製貼上同一組門檻+顏色,以後要調色只要改這裡一處。"""
+    if score100 >= 75:
+        return "#f97316"
+    if score100 <= 25:
+        return "#38bdf8"
+    return "#9ca3af"
+
+
+def _build_level_badges_html(levels: list, current_price: float, color: str) -> str:
+    """支撐/阻力價位的徽章列,取代原本純文字caption——顏色直接沿用CHART_THEME裡
+    support/resistance的顏色,讓這裡跟K線圖上畫的支撐/阻力線是同一套顏色語言,
+    不用另外發明一套配色,看圖時可以直接把caption跟線對起來。"""
+    pills = "".join(
+        f'<span style="display:inline-block; margin:0.2rem 0.4rem 0.2rem 0; padding:0.2rem 0.6rem; '
+        f'border-radius:8px; font-size:0.82rem; font-weight:600; font-variant-numeric:tabular-nums; '
+        f'color:{color}; background:{color}1f; border:1px solid {color}40;">'
+        f'{lv["price"]:,.2f}<span style="font-weight:400; opacity:0.75;"> ({lv["price"] / current_price - 1:+.1%})</span></span>'
+        for lv in levels
+    )
+    return f'<div style="margin-top:0.3rem;">{pills}</div>'
 
 
 def _render_reversal_banner(signal: dict) -> None:
@@ -1051,7 +1136,7 @@ if night_signal:
 
     if live_participation.get("available"):
         p_score = live_participation["score100"]
-        p_color = "#f97316" if p_score >= 75 else ("#38bdf8" if p_score <= 25 else "#9ca3af")
+        p_color = _participation_score_color(p_score)
         p_gauge_html = _build_participation_gauge_html(p_score)
         p_chg = live_participation["change_pct"]
         if p_chg is None:
@@ -1081,7 +1166,7 @@ if night_signal:
         # 那邊同樣的 .get() 容錯理由。
         last_night_score = long_score100
         if last_night_score is not None:
-            ln_color = "#f97316" if last_night_score >= 75 else ("#38bdf8" if last_night_score <= 25 else "#9ca3af")
+            ln_color = _participation_score_color(last_night_score)
             short_score100 = night_signal.get("short_score100")
             short_score_note = (
                 f'近{night_signal.get("short_window_days")}夜評分{short_score100}({night_signal.get("short_strength")})・'
@@ -1235,13 +1320,19 @@ if code == "^TWOII":
             "較長天數的指標在累積足夠天數前會是空的,不影響蠟燭本身。"
         )
         if otc_supports:
-            support_desc = "、".join(f"{s['price']:,.2f}({s['price']/quote['last_price'] - 1:+.1%})" for s in otc_supports)
-            st.caption(f"籌碼支撐(成交量分佈區域高峰,離目前指數最近的{len(otc_supports)}個):{support_desc}")
+            st.caption(f"籌碼支撐(成交量分佈區域高峰,離目前指數最近的{len(otc_supports)}個):")
+            st.markdown(
+                _build_level_badges_html(otc_supports, quote["last_price"], CHART_THEME["support"]),
+                unsafe_allow_html=True,
+            )
         else:
             st.caption("籌碼資料累積中,還找不到明顯支撐。")
         if otc_resistances:
-            resistance_desc = "、".join(f"{r['price']:,.2f}({r['price']/quote['last_price'] - 1:+.1%})" for r in otc_resistances)
-            st.caption(f"籌碼阻力(成交量分佈區域高峰,離目前指數最近的{len(otc_resistances)}個):{resistance_desc}")
+            st.caption(f"籌碼阻力(成交量分佈區域高峰,離目前指數最近的{len(otc_resistances)}個):")
+            st.markdown(
+                _build_level_badges_html(otc_resistances, quote["last_price"], CHART_THEME["resistance"]),
+                unsafe_allow_html=True,
+            )
         else:
             st.caption("籌碼資料累積中,還找不到明顯阻力。")
     else:
@@ -1442,13 +1533,13 @@ def _render_chart_section():
 
     close = float(df["Close"].iloc[-1])
     if supports:
-        support_desc = "、".join(f"{s['price']:,.2f}({s['price']/close - 1:+.1%})" for s in supports)
-        st.caption(f"近3個月籌碼支撐(成交量分佈區域高峰,離目前收盤價最近的{len(supports)}個):{support_desc}")
+        st.caption(f"近3個月籌碼支撐(成交量分佈區域高峰,離目前收盤價最近的{len(supports)}個):")
+        st.markdown(_build_level_badges_html(supports, close, CHART_THEME["support"]), unsafe_allow_html=True)
     else:
         st.caption("近3個月籌碼資料不足,找不到明顯支撐。")
     if resistances:
-        resistance_desc = "、".join(f"{r['price']:,.2f}({r['price']/close - 1:+.1%})" for r in resistances)
-        st.caption(f"近3個月籌碼阻力(成交量分佈區域高峰,離目前收盤價最近的{len(resistances)}個):{resistance_desc}")
+        st.caption(f"近3個月籌碼阻力(成交量分佈區域高峰,離目前收盤價最近的{len(resistances)}個):")
+        st.markdown(_build_level_badges_html(resistances, close, CHART_THEME["resistance"]), unsafe_allow_html=True)
     else:
         st.caption("近3個月籌碼資料不足,找不到明顯阻力。")
     st.markdown("</div>", unsafe_allow_html=True)
@@ -1566,6 +1657,7 @@ with tab_ai:
         )
 
     if st.button("🚦 檢查燈號"):
+        st.session_state["_long_task_running"] = True
         with st.spinner("檢查中..."):
             try:
                 if light_scope == "檢查整個 .dsl 股票池(有個股期貨的標的)":
@@ -1591,6 +1683,7 @@ with tab_ai:
                         else:
                             st.success(f"共檢查 {len(results)} 檔股票,{len(qualified)} 檔達成 {light_min_count} 項以上條件")
                             rows = []
+                            condition_labels = [c["label"] for c in qualified[0]["conditions"].values()]
                             for r in qualified:
                                 row = {
                                     "代號": r["code"],
@@ -1598,9 +1691,19 @@ with tab_ai:
                                     "達成數": f"{r['passed_count']}/{r['total']}",
                                 }
                                 for c in r["conditions"].values():
-                                    row[c["label"]] = "🟢" if c["passed"] else "🔴"
+                                    row[c["label"]] = "達成" if c["passed"] else "未達成"
                                 rows.append(row)
-                            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+                            def _style_condition_cell(v):
+                                # 取代原本🟢/🔴 emoji——用金色底色代表達成,呼應報告上方
+                                # badge-hit/badge-miss那組配色,emoji在批次表格裡也是同一個
+                                # 不受控字型渲染問題
+                                if v == "達成":
+                                    return "background-color: rgba(234,179,8,0.16); color: #eab308; font-weight: 600;"
+                                return "color: #6b7280;"
+
+                            styled = pd.DataFrame(rows).style.map(_style_condition_cell, subset=condition_labels)
+                            st.dataframe(styled, use_container_width=True, hide_index=True)
                 else:
                     from signals import evaluate_light_signals
 
@@ -1609,10 +1712,12 @@ with tab_ai:
 
                     light_cols = st.columns(light_result["total"])
                     for lcol, c in zip(light_cols, light_result["conditions"].values()):
-                        lcol.metric(c["label"], "🟢 達成" if c["passed"] else "🔴 未達成")
+                        lcol.markdown(_build_condition_badge_html(c["label"], c["passed"]), unsafe_allow_html=True)
                         lcol.caption(c["detail"])
             except Exception as e:
                 st.error(f"檢查失敗:{e}")
+            finally:
+                st.session_state["_long_task_running"] = False
     st.markdown("</div>", unsafe_allow_html=True)
 
 # --- 分點掃描 ---
@@ -1664,6 +1769,7 @@ with tab_scan:
         "會比較久,當天算過的結果會存快取,同一天內重複計算會很快。上市不到 12 個月的新股會被跳過。"
     )
     if st.button("💪 開始計算 RS 排行"):
+        st.session_state["_long_task_running"] = True
         try:
             from xq_watchlist import get_stock_futures_codes_from_watchlists
             from stock_futures import get_stock_futures_name
@@ -1690,11 +1796,34 @@ with tab_scan:
                     for col, label in [("r3m", "近3月報酬"), ("r6m", "近6月報酬"), ("r12m", "近12月報酬")]:
                         display[label] = display[col].map(lambda x: f"{x*100:+.1f}%")
                     display = display.rename(columns={"code": "代號", "rs_rating": "RS Rating"})
-                    st.dataframe(
-                        display[["代號", "名稱", "RS Rating", "近3月報酬", "近6月報酬", "近12月報酬"]],
-                        use_container_width=True,
-                        hide_index=True,
+
+                    def _rs_rating_bg(v):
+                        # RS Rating(0~99)用金色底色深淺表示強弱,一眼看出排名高低,
+                        # 不用逐格看數字比大小——單一色相由淺到深,是排名/幅度資料
+                        # 常見的視覺分級做法
+                        alpha = 0.04 + (v / 99) * 0.34
+                        return f"background-color: rgba(234,179,8,{alpha:.2f}); font-weight:600;"
+
+                    def _return_pct_color(v):
+                        # 報酬率欄位比照全站紅漲綠跌慣例上色,跟其他地方(quote-badge等)
+                        # 是同一套顏色語言,不是這個表格另外發明的配色
+                        try:
+                            num = float(str(v).rstrip("%"))
+                        except ValueError:
+                            return ""
+                        if num > 0:
+                            return "color: #ef4444;"
+                        if num < 0:
+                            return "color: #22c55e;"
+                        return ""
+
+                    return_cols = ["近3月報酬", "近6月報酬", "近12月報酬"]
+                    styled_ranking = (
+                        display[["代號", "名稱", "RS Rating"] + return_cols]
+                        .style.map(_rs_rating_bg, subset=["RS Rating"])
+                        .map(_return_pct_color, subset=return_cols)
                     )
+                    st.dataframe(styled_ranking, use_container_width=True, hide_index=True)
 
                     current_row = ranking[ranking["code"] == code]
                     if not current_row.empty:
@@ -1703,5 +1832,7 @@ with tab_scan:
                         st.caption(f"{code} 不在目前的 .dsl 自選清單股票池裡,所以沒有算入這次排行。")
         except Exception as e:
             st.error(f"RS 排行計算失敗:{e}")
+        finally:
+            st.session_state["_long_task_running"] = False
     st.markdown("</div>", unsafe_allow_html=True)
 
