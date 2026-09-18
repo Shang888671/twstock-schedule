@@ -1316,7 +1316,15 @@ if night_signal:
                 cq_chg_str = "▬ 0.00%"
             ctime_raw = current_quote.get("ctime")
             ctime_str = f"{ctime_raw[:2]}:{ctime_raw[2:4]}:{ctime_raw[4:6]}" if ctime_raw and len(ctime_raw) == 6 else "—"
-            freshness_note = "" if current_quote["is_live"] else "・非夜盤成交,日盤收盤定住的價格"
+            # 這筆可能是日盤收盤定住的價格、也可能是夜盤收盤定住的價格(取決於night_session.
+            # get_tx_live_quote()當下判斷哪組比較新,見該函式docstring),不能寫死成其中一種,
+            # 用symbol_id字尾("-M"=夜盤合約,"-F"=日盤合約)動態判斷要講哪一句。
+            if current_quote["is_live"]:
+                freshness_note = ""
+            elif str(current_quote.get("symbol_id", "")).endswith("-M"):
+                freshness_note = "・夜盤收盤定住的價格"
+            else:
+                freshness_note = "・日盤收盤定住的價格"
             quote_line_html = (
                 f'<div style="font-size:0.85rem; color:#8b93a7; margin-top:0.4rem;">'
                 f'目前指數 <span style="color:var(--accent-gold); font-weight:700; font-size:0.95rem;">'

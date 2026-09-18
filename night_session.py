@@ -38,6 +38,7 @@ NIGHT_SESSION_URL = "https://www.taifex.com.tw/cht/3/futDailyMarketExcel"
 _TAIPEI_TZ = ZoneInfo("Asia/Taipei")
 NIGHT_SESSION_START = dt_time(15, 0)
 NIGHT_SESSION_END = dt_time(5, 0)
+DAY_SESSION_START = dt_time(8, 45)  # TX日盤開盤時間,跟intraday.py的股票開盤09:00不同
 NIGHT_SESSION_TOTAL_MINUTES = 14 * 60  # 15:00~次日05:00,共14小時
 
 # mis.taifex.com.tw 是期交所自己的「行情資訊網」,跟上面 futDailyMarketExcel(每日行情下載,
@@ -303,6 +304,17 @@ def get_tx_live_quote() -> dict | None:
     晚上當然一直卡在13:45收盤的舊報價,跟星期幾無關。現在依「現在是不是夜盤時段」決定先
     打哪一組,失敗才 fallback 打另一組(確保不管什麼時候呼叫都盡量有資料可顯示)。
 
+    **第二次修正(哪一組才是「比較新」的資料)**:上一版用`now.time()>=15:00 or <=05:00`
+    當「現在是不是夜盤時段」的依據,不是夜盤時段就打日盤那組當primary——這個判斷在
+    05:00~08:45這個空窗(夜盤剛收、日盤還沒開)是錯的:使用者在週六早上(當天日盤根本
+    不開)看到的畫面是「TXFJ6-F 13:44:59」,那是**上週五日盤**收盤時定住的舊報價,
+    但這個時間點真正最新的資料其實是**週五晚上夜盤**(15:00~週六05:00)剛收的那筆,
+    比日盤那筆新了將近16小時卻沒被選到,因為程式只看「現在是不是夜盤中」,沒考慮
+    「夜盤剛結束、日盤還沒開」這個空窗期其實該優先秀夜盤的資料。改成用
+    `DAY_SESSION_START(08:45)~NIGHT_SESSION_START(15:00)`這段區間才代表「日盤資料比較
+    新」,區間外(不管是夜盤進行中、還是05:00~08:45的空窗)一律優先秀夜盤資料,才符合
+    「兩個時段實際收盤先後順序」的真實情況。
+
     **is_live 判斷**:比對報價的`CTime`跟現在時間的分鐘差,超過15分鐘沒動代表這其實是
     舊報價(例如剛好在夜盤開盤前的空窗、或假日/收盤後一直沒有新成交),`is_live=False`
     ——呼叫端如果只想要「真的活的即時成交」(例如即時評分算分)才自己判斷這個旗標決定
@@ -311,9 +323,11 @@ def get_tx_live_quote() -> dict | None:
     發生的成交。
     """
     now = datetime.now(_TAIPEI_TZ)
-    in_night_hours = now.time() >= NIGHT_SESSION_START or now.time() <= NIGHT_SESSION_END
-    primary = (QUOTE_LIST_PAYLOAD_NIGHT, "-M") if in_night_hours else (QUOTE_LIST_PAYLOAD_DAY, "-F")
-    fallback = (QUOTE_LIST_PAYLOAD_DAY, "-F") if in_night_hours else (QUOTE_LIST_PAYLOAD_NIGHT, "-M")
+    # 只有「日盤開盤~夜盤開盤前」這段區間(08:45~15:00)日盤資料才是比較新的一筆,其餘時間
+    # (夜盤進行中,或05:00~08:45夜盤剛收、日盤還沒開的空窗)都是夜盤資料比較新,見上方docstring。
+    day_data_is_newer = DAY_SESSION_START <= now.time() < NIGHT_SESSION_START
+    primary = (QUOTE_LIST_PAYLOAD_DAY, "-F") if day_data_is_newer else (QUOTE_LIST_PAYLOAD_NIGHT, "-M")
+    fallback = (QUOTE_LIST_PAYLOAD_NIGHT, "-M") if day_data_is_newer else (QUOTE_LIST_PAYLOAD_DAY, "-F")
 
     quote = _fetch_tx_quote(*primary) or _fetch_tx_quote(*fallback)
     if quote is None:
