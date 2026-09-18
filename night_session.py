@@ -250,26 +250,31 @@ def _elapsed_night_session_minutes(now: datetime) -> float:
 
 
 def get_tx_live_quote() -> dict | None:
-    """台指期(TX)近月合約即時成交量/報價——跟 get_night_session_history() 是不同資料源
-    (見上面 QUOTE_LIST_URL 的說明),這個才是真的隨盤中成交即時變動的數字。
+    """台指期(TX)近月合約目前最後已知報價——跟 get_night_session_history() 是不同資料源
+    (見上面 QUOTE_LIST_URL 的說明)。不管現在是不是真的夜盤中都會回傳(只要API本身正常、
+    這個合約有任何已知報價),用於畫面上「現在指數多少」的顯示——不管夜盤有沒有開,使用者
+    都應該看得到某個TX指數數字,不是只有夜盤即時評分算得出來才顯示。
 
     回傳清單裡第一個 SymbolID 以「-F」結尾的項目當近月合約("-S"開頭的是現貨參考指數,
-    不是期貨合約;清單本身已經照到期月份由近到遠排序)。非交易時段、或該API本身異常、
-    或欄位是空字串(該API在沒有成交時就是回傳空字串,不是0)時,回傳 None,呼叫端優雅跳過。
+    不是期貨合約;清單本身已經照到期月份由近到遠排序)。API本身異常、或欄位是空字串
+    (該API在沒有任何成交紀錄時就是回傳空字串,不是0)時,回傳 None,呼叫端優雅跳過。
 
     **重要陷阱**:這個API不會因為「還沒開盤/今晚沒有夜盤」就回傳空值——它就是回傳「這個
     合約目前最後已知的狀態」,沒有新成交就一直回傳同一筆舊資料,不會主動說「現在沒有交易」。
-    如果晚上15:00剛過還沒真正開始交易(或整個晚上沒有夜盤,is_night_session_open_now()
-    誤判的情況,例如假日),抓到的會是白天日盤收盤時定住的舊報價,`CTime`(最後成交時間)
-    會停在日盤收盤附近(13:4x前後),明顯早於夜盤開盤時間15:00。這裡額外驗證一次:如果
-    現在已經過了今天15:00(晚上這段,不是跨夜到隔天清晨那段),但報價的CTime還停在15:00
-    之前,代表這其實是舊的日盤收盤報價、不是真的夜盤成交,回傳None(呼叫端會判斷成
-    「資料不足」而不是誤把靜止的舊報價當成活的即時資料顯示)。這是實際發生過的bug——
-    週五晚上因為is_night_session_open_now()誤判成夜盤中(已修正),曾經讓「夜盤即時參與度
-    評分」整晚顯示同一個數字,看起來像是死的。跨夜到隔天清晨(00:00~05:00)這段不做這個
-    檢查,因為當時合理的CTime範圍(可能是昨晚15:00~23:59,也可能是今天00:00~05:00)
-    橫跨兩個日期,单純比較時間字串會誤判,情況複雜所以先不查,反正這個時段的「今晚沒開盤」
-    誤判已經靠is_night_session_open_now()的週五排除擋掉大部分情況。
+    如果晚上15:00剛過還沒真正開始交易(或整個晚上沒有夜盤,例如假日),抓到的會是白天日盤
+    收盤時定住的舊報價,`CTime`(最後成交時間)會停在日盤收盤附近(13:4x前後),明顯早於
+    夜盤開盤時間15:00。這裡額外算一個`is_live`旗標:如果現在已經過了今天15:00(晚上這段,
+    不是跨夜到隔天清晨那段),但報價的CTime還停在15:00之前,代表這其實是舊的日盤收盤報價、
+    不是真的夜盤成交,`is_live=False`——呼叫端如果只想要「真的活的夜盤成交」(例如即時評分
+    算分)才自己判斷這個旗標決定要不要用;如果只是想顯示「目前指數是多少」(不管新舊都想看
+    到一個數字),可以不管這個旗標直接顯示,但要搭配`ctime`告知使用者這筆報價的實際時間,
+    不要讓人誤以為那是剛剛發生的成交。跨夜到隔天清晨(00:00~05:00)這段不算`is_live`
+    (交由呼叫端自行決定,原因跟之前一樣:合理的CTime範圍橫跨兩個日期,單純比較時間字串
+    會誤判,先簡化成一律標True不擋)。這是實際發生過的bug帶出的設計:週五晚上因為
+    is_night_session_open_now()誤判成夜盤中(已修正),曾經讓「夜盤即時參與度評分」整晚
+    顯示同一個數字看起來像是死的;修完那個bug後,原本的「昨晚最終評分」fallback卡片又完全
+    不顯示任何指數數字(因為compute_night_session_strength()的歷史資料源本來就沒有價格
+    欄位,只有%漲跌),所以再抽出這支函式讓app.py不管夜盤開不開都能拿到一個指數數字顯示。
     """
     try:
         resp = requests.post(QUOTE_LIST_URL, json=QUOTE_LIST_PAYLOAD, headers=HEADERS, timeout=10)
@@ -280,12 +285,6 @@ def get_tx_live_quote() -> dict | None:
     front_month = next((q for q in quotes if str(q.get("SymbolID", "")).endswith("-F")), None)
     if front_month is None:
         return None
-
-    now = datetime.now(_TAIPEI_TZ)
-    if now.time() >= NIGHT_SESSION_START:
-        ctime_str = str(front_month.get("CTime") or "").strip()
-        if ctime_str and ctime_str < "150000":
-            return None
 
     volume_str = str(front_month.get("CTotalVolume") or "").strip()
     if not volume_str:
@@ -299,11 +298,17 @@ def get_tx_live_quote() -> dict | None:
     except (TypeError, ValueError):
         return None
 
+    ctime_str = str(front_month.get("CTime") or "").strip()
+    now = datetime.now(_TAIPEI_TZ)
+    is_live = not (now.time() >= NIGHT_SESSION_START and ctime_str and ctime_str < "150000")
+
     return {
         "symbol_id": front_month["SymbolID"],
         "volume": volume,
         "last_price": last_price,
         "change_pct": change_pct,
+        "ctime": ctime_str or None,
+        "is_live": is_live,
     }
 
 
@@ -366,7 +371,7 @@ def compute_live_participation_score(lookback_days: int = LOOKBACK_DAYS_DEFAULT)
         return {"available": False, "reason": "insufficient"}
 
     live = get_tx_live_quote()
-    if live is None:
+    if live is None or not live["is_live"]:
         return {"available": False, "reason": "insufficient"}
 
     hist = get_night_session_history(lookback_days=lookback_days)

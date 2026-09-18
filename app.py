@@ -1227,6 +1227,34 @@ if night_signal:
         # long_score100,拿不到(舊快取字典沒有這個key)才就地用 ratio 重算,見上面 ratio_str
         # 那邊同樣的 .get() 容錯理由。
         last_night_score = long_score100
+
+        # 這個fallback區塊原本只有量能比評分,完全沒有指數數字——使用者反映「指數都沒顯示
+        # 出來」,不管夜盤有沒有開都要看到現在的TX指數連動。get_tx_live_quote()不管夜盤
+        # 開沒開都會回傳「目前最後已知報價」,用is_live旗標判斷這筆報價是不是剛剛真的成交
+        # 的,不是的話老實標示資料時間讓使用者自己判斷,不要包裝成即時。
+        try:
+            current_quote = night_session.get_tx_live_quote()
+        except Exception:
+            current_quote = None
+        quote_line_html = ""
+        if current_quote and current_quote.get("last_price") is not None:
+            cq_chg = current_quote["change_pct"]
+            if cq_chg is None:
+                cq_chg_str = "—"
+            elif cq_chg > 0:
+                cq_chg_str = f"▲ {cq_chg:+.2f}%"
+            elif cq_chg < 0:
+                cq_chg_str = f"▼ {cq_chg:+.2f}%"
+            else:
+                cq_chg_str = "▬ 0.00%"
+            ctime_raw = current_quote.get("ctime")
+            ctime_str = f"{ctime_raw[:2]}:{ctime_raw[2:4]}:{ctime_raw[4:6]}" if ctime_raw and len(ctime_raw) == 6 else "—"
+            freshness_note = "" if current_quote["is_live"] else "・非夜盤成交,日盤收盤定住的價格"
+            quote_line_html = (
+                f'<div style="font-size:0.78rem; color:#8b93a7; margin-top:0.4rem;">'
+                f'目前指數 {current_quote["symbol_id"]} {current_quote["last_price"]:,.0f} {cq_chg_str}'
+                f'(資料時間{ctime_str}{freshness_note})</div>'
+            )
         if last_night_score is not None:
             ln_color = _participation_score_color(last_night_score)
             short_score100 = night_signal.get("short_score100")
@@ -1248,13 +1276,15 @@ if night_signal:
                 f'<div class="quote-symbol" style="font-size:0.85rem;">📅 昨晚({night_signal["date"]})最終評分(收盤結算,非步調比較)</div>'
                 f'<div class="quote-price-row"><div class="quote-price" style="font-size:2.4rem; color:{ln_color};">{last_night_score}</div>'
                 f'<div class="quote-badge badge-flat">{strength_text}</div></div>'
+                f"{quote_line_html}"
                 f"{_build_participation_gauge_html(last_night_score)}"
                 f'<div style="font-size:0.78rem; color:#8b93a7; margin-top:0.4rem;">{short_score_note}{next_session_note}</div></div>'
             )
         else:
             live_block_html = (
                 '<div style="margin-top:1rem; padding-top:0.8rem; border-top:1px solid rgba(255,255,255,0.08); '
-                'color:#8b93a7; font-size:0.85rem;">⚡ 目前非夜盤時段(15:00~次日05:00),昨晚資料不足無法評分。</div>'
+                'color:#8b93a7; font-size:0.85rem;">⚡ 目前非夜盤時段(15:00~次日05:00),昨晚資料不足無法評分。'
+                f"{quote_line_html}</div>"
             )
     else:
         live_block_html = (
