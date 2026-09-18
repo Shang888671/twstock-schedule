@@ -757,17 +757,21 @@ _CHART_HTML_TEMPLATE = """
   // 軸的縮放範圍本身就不把最高點的K線畫到圖例那塊區域裡。
   candleSeries.priceScale().applyOptions({ scaleMargins: { top: 0.3, bottom: 0.22 } });
 
+  // axisLabelVisible關掉:支撐/阻力常常彼此價位很接近(甚至跟現價軸標籤只差幾點),lightweight-
+  // charts的多個createPriceLine軸標籤沒有互相避讓的機制,價位一擠在一起就疊字疊成一坨看不清楚
+  // (使用者截圖回報過)。虛線本身還是畫在K線圖上當視覺參考,實際數字已經在圖表下方的支撐/阻力
+  // 色徽章列表清楚列出,軸標籤只是重複資訊,關掉不影響看得到的資訊量,只是不再擠成一坨。
   DATA.supports.forEach(function (s, i) {
     candleSeries.createPriceLine({
       price: s.price, color: THEME.support, lineWidth: 1,
-      lineStyle: LightweightCharts.LineStyle.Dashed, axisLabelVisible: true,
+      lineStyle: LightweightCharts.LineStyle.Dashed, axisLabelVisible: false,
       title: '支撐' + (i + 1),
     });
   });
   DATA.resistances.forEach(function (r, i) {
     candleSeries.createPriceLine({
       price: r.price, color: THEME.resistance, lineWidth: 1,
-      lineStyle: LightweightCharts.LineStyle.Dashed, axisLabelVisible: true,
+      lineStyle: LightweightCharts.LineStyle.Dashed, axisLabelVisible: false,
       title: '阻力' + (i + 1),
     });
   });
