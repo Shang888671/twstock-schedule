@@ -207,27 +207,82 @@ with st.sidebar:
         # Screen Wake Lock API 只在使用者主動要求時才申請(這個checkbox本身就是那個要求),
         # 拿到的鎖只在這個分頁還開著、還在前景時有效——分頁被切到背景鎖會自動釋放,所以額外
         # 監聽visibilitychange,切回前景時重新申請一次。這段HTML每次腳本重跑(例如auto_refresh
-        # 每60秒重跑一次)都會重新插入、重新申請一次鎖,等於順便定期補鎖,不用擔心中途意外釋放
+        # 每20秒重跑一次)都會重新插入、重新申請一次鎖,等於順便定期補鎖,不用擔心中途意外釋放
         # 後就再也不會恢復。不支援這個API的瀏覽器會被catch住,靜默不作用,不影響其他功能。
+        # 手機瀏覽器坑:(1) Streamlit這段程式碼是跑在獨立iframe裡,iOS Safari(WebKit)要求
+        # wakeLock.request()必須發生在「使用者手勢」當下才會放行,腳本自動執行(沒有手指點擊
+        # 這個動作本身)一律被靜默拒絕,導致鎖從來沒真的生效過,螢幕還是照系統預設時間變暗;
+        # (2) 拿到的WakeLockSentinel物件沒存到任何看得到的地方會被當成沒人參照,有些瀏覽器可能
+        # 提早釋放鎖。修法:先照舊自動試一次(桌機/多數Android Chrome不需要手勢,靜默成功);
+        # 失敗的話(主要是iOS Safari)才顯示一顆按鈕請使用者手動點一下,點擊事件本身就是手勢,
+        # 在點擊的同一個呼叫堆疊裡申請鎖就能通過WebKit的限制。鎖物件存在window.parent上
+        # (跨這個元件每次rerun都重新產生的iframe持續存在),避免被回收。
         components.html(
             """
+            <div id="wl-wrap" style="font-family:'Noto Sans TC',sans-serif;">
+              <button id="wl-btn" style="display:none; background:#eab308; color:#111827;
+                border:none; border-radius:8px; padding:5px 12px; font-size:0.8rem;
+                font-weight:700; cursor:pointer;">🔆 點一下維持螢幕常亮</button>
+              <span id="wl-status" style="font-size:0.75rem; color:#9ca3af;"></span>
+            </div>
             <script>
-            (async () => {
-                try {
-                    if (!('wakeLock' in navigator)) return;
-                    await navigator.wakeLock.request('screen');
-                    document.addEventListener('visibilitychange', async () => {
-                        if (document.visibilityState === 'visible') {
-                            try { await navigator.wakeLock.request('screen'); } catch (e) {}
+            (function () {
+                const w = (() => {
+                    try { return (window.parent && window.parent.navigator) ? window.parent : window; }
+                    catch (e) { return window; }
+                })();
+                const btn = document.getElementById('wl-btn');
+                const status = document.getElementById('wl-status');
+
+                async function requestLock(viaFrame) {
+                    try {
+                        const nav = viaFrame.navigator;
+                        if (!('wakeLock' in nav)) return false;
+                        const sentinel = await nav.wakeLock.request('screen');
+                        w.__twWakeLock = sentinel;
+                        return true;
+                    } catch (err) {
+                        return false;
+                    }
+                }
+
+                async function ensureLock(fromGesture) {
+                    if (w.__twWakeLock && !w.__twWakeLock.released) {
+                        status.textContent = '✅ 螢幕常亮已啟用';
+                        btn.style.display = 'none';
+                        return true;
+                    }
+                    let ok = await requestLock(window);
+                    if (!ok && w !== window) ok = await requestLock(w);
+                    if (ok) {
+                        status.textContent = '✅ 螢幕常亮已啟用';
+                        btn.style.display = 'none';
+                    } else if (fromGesture) {
+                        status.textContent = '此瀏覽器不支援或不允許螢幕常亮';
+                        btn.style.display = 'none';
+                    } else {
+                        status.textContent = '';
+                        btn.style.display = 'inline-block';
+                    }
+                    return ok;
+                }
+
+                btn.addEventListener('click', () => ensureLock(true));
+                ensureLock(false);
+
+                if (!w.__twWakeLockVisListener) {
+                    w.__twWakeLockVisListener = true;
+                    w.document.addEventListener('visibilitychange', async () => {
+                        if (w.document.visibilityState === 'visible' &&
+                            (!w.__twWakeLock || w.__twWakeLock.released)) {
+                            await requestLock(window) || await requestLock(w);
                         }
                     });
-                } catch (err) {
-                    console.warn('螢幕常亮(Wake Lock)申請失敗,瀏覽器可能不支援或不允許:', err);
                 }
             })();
             </script>
             """,
-            height=0,
+            height=32,
         )
     st.divider()
     query_mode = st.radio("查詢標的", ["個股", "加權指數", "櫃買指數"], horizontal=True)
