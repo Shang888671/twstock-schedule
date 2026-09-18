@@ -49,7 +49,7 @@ def _load_logo_img_tag() -> str:
     markdown/HTML字串裡(st.markdown的f-string),跟st.image()那種需要獨立版面位置的用法
     不同,這裡要跟文字同一行。圖檔不會變,用@st.cache_data包住只讀一次檔案。"""
     b64 = base64.b64encode(LOGO_PATH.read_bytes()).decode()
-    return f'<img src="data:image/png;base64,{b64}" style="height:1.3rem; vertical-align:-4px; margin-right:0.3rem;">'
+    return f'<img src="data:image/png;base64,{b64}" style="height:2.2rem; vertical-align:-8px; margin-right:0.4rem; image-rendering:-webkit-optimize-contrast;">'
 
 
 LOGO_IMG_TAG = _load_logo_img_tag()
