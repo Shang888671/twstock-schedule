@@ -26,7 +26,7 @@ from fetch_data import (
 )
 from indicators import add_indicators
 from volume_profile import find_nearest_supports, find_nearest_resistances
-from us_market import get_us_overnight_signal, US_MARKET_SYMBOLS, STRENGTH_WEIGHT, SCORE_STRONG_THRESHOLD
+from us_market import get_us_overnight_signal, US_MARKET_SYMBOLS, SCORE_SYMBOLS, STRENGTH_WEIGHT, SCORE_STRONG_THRESHOLD
 from xq_branch import XQ_BRANCH_DIR
 
 st.set_page_config(page_title="台股查詢模型", page_icon="📈", layout="wide")
@@ -909,7 +909,8 @@ if us_signal:
         us_badge_class, us_badge_text = "badge-flat", "資料不足"
 
     # 淨分視覺化:見 _build_score_gauge_html()(跟盤中強弱指標共用同一個 helper)。
-    SCORE_MAX = max(STRENGTH_WEIGHT.values()) * len(US_MARKET_SYMBOLS)
+    # 只有 SCORE_SYMBOLS(小道瓊/那斯達克期貨)計入淨分,費半/台積電ADR不計分只顯示漲跌。
+    SCORE_MAX = max(STRENGTH_WEIGHT.values()) * len(SCORE_SYMBOLS)
     score_gauge_html = _build_score_gauge_html(score, SCORE_MAX, SCORE_STRONG_THRESHOLD)
 
     US_STRENGTH_COLOR = {"強": "var(--accent-gold)", "普通": "#8b93a7", "弱": "#6b7280"}
@@ -944,7 +945,7 @@ if us_signal:
             f'border-radius:50%; background:{color}; margin-right:6px; vertical-align:middle;"></span>'
         )
 
-    def _us_stat_html(label, r):
+    def _us_stat_html(label, r, show_value=False):
         if not r:
             return f'<div class="stat-item"><div class="label">{label}</div><div class="value">—</div></div>'
         arrow = "▲" if r["change_pct"] > 0 else ("▼" if r["change_pct"] < 0 else "▬")
@@ -956,16 +957,28 @@ if us_signal:
             if strength
             else ""
         )
+        # show_value:小道瓊/那斯達克期貨額外顯示實際指數點位,不然使用者只看得到%數,
+        # 不知道漲跌的實際數值——費半/ADR只給參考用,維持單純顯示%不加這個
+        value_html = (
+            f' <span style="font-size:0.72rem; color:#8b93a7; font-weight:500;">・{r["close"]:,.2f}</span>'
+            if show_value
+            else ""
+        )
         return (
             f'<div class="stat-item"><div class="label">{label}(收{r["asof"][:10]})</div>'
-            f'<div class="value" style="color:{color}">{arrow} {r["change_pct"]:+.2f}%{strength_html}</div></div>'
+            f'<div class="value" style="color:{color}">{arrow} {r["change_pct"]:+.2f}%{strength_html}{value_html}</div></div>'
         )
 
     stat_items = "".join(
-        _us_stat_html(label, us_signal[key]) for key, (_, label) in US_MARKET_SYMBOLS.items()
+        _us_stat_html(label, us_signal[key], show_value=(key in SCORE_SYMBOLS))
+        for key, (_, label) in US_MARKET_SYMBOLS.items()
     )
+    # 燈號圓點只給計入淨分的兩個指標(小道瓊/那斯達克期貨)——費半/ADR不計分,旁邊放
+    # 燈號會讓人誤以為4個都算進淨分裡
     light_items = "".join(
-        _us_light_html(label, us_signal[key]) for key, (_, label) in US_MARKET_SYMBOLS.items()
+        _us_light_html(label, us_signal[key])
+        for key, (_, label) in US_MARKET_SYMBOLS.items()
+        if key in SCORE_SYMBOLS
     )
 
     # 櫃買指數即時位階——使用者親身經歷櫃買市場盤中從高點急殺,而櫃買指數(電子/半導體權重高)
@@ -1060,12 +1073,13 @@ if us_signal:
         unsafe_allow_html=True,
     )
     st.caption(
-        "小道瓊/那斯達克期貨(YM=F/NQ=F)近24小時交易,涵蓋最新夜盤走勢;費半(^SOX)、"
-        "台積電ADR(TSM)是美股現貨收盤價。「強/普通/弱」是今天漲跌幅度跟自己近20日平均"
-        "單日波動的比較,不是固定的絕對門檻。淨分是4個指標依強弱加權(弱1分/普通2分/強3分)"
-        f"後加總的多空分數,範圍 ±{SCORE_MAX},橫條顯示淨分離兩端滿分有多遠,越極端代表訊號"
-        "越一致越強烈。badge旁邊4個燈號依序對應小道瓊期貨/那斯達克期貨/費半/台積電ADR,"
-        "顏色深淺=強弱、紅漲綠跌(hover可看細節)。純觀察參考,不是下單訊號。"
+        "小道瓊/那斯達克期貨(YM=F/NQ=F)近24小時交易,涵蓋最新夜盤走勢,額外附實際指數點位;"
+        "費半(^SOX)、台積電ADR(TSM)是美股現貨收盤價,只顯示漲跌幅供參考、不計入淨分。"
+        "「強/普通/弱」是今天漲跌幅度跟自己近20日平均單日波動的比較,不是固定的絕對門檻。"
+        "淨分只由小道瓊/那斯達克期貨依強弱加權(弱1分/普通2分/強3分)後加總得出的多空分數,"
+        f"範圍 ±{SCORE_MAX},橫條顯示淨分離兩端滿分有多遠,越極端代表訊號越一致越強烈。"
+        "badge旁邊2個燈號依序對應小道瓊期貨/那斯達克期貨(這兩個才計分),顏色深淺=強弱、"
+        "紅漲綠跌(hover可看細節)。純觀察參考,不是下單訊號。"
     )
     st.caption(
         "🎯 櫃買指數位階:「今日」是現價在今天高低區間的哪個位置(TWSE即時報價,每次頁面"

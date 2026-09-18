@@ -26,14 +26,20 @@
 綜合方向改用「強弱加權分數」,不是單純「幾個漲、幾個跌」多數決——舊版多數決有個明顯
 盲點:如果2個指標「普通」上漲、2個指標「強」下跌,單純數人頭會打成平手「不一致(2:2)」,
 但直覺上這種組合其實偏空氣氛更重,只是被多數決抹平了。改法:每個指標依強弱給權重
-(弱=1、普通=2、強=3,`STRENGTH_WEIGHT`),乘上方向正負號後加總得出淨分數(`score`,
-範圍 -12~+12,4個指標都是「強」同向時打到滿分),再依 `SCORE_STRONG_THRESHOLD` 分成
-「強多/偏多/中性/偏空/強空」五級。強弱資料不足(近期資料不到 `STRENGTH_WINDOW_DAYS`
-天)的指標,算分時退回跟「普通」一樣的權重(2),不會整個被排除在外。
+(弱=1、普通=2、強=3,`STRENGTH_WEIGHT`),乘上方向正負號後加總得出淨分數(`score`),
+再依 `SCORE_STRONG_THRESHOLD` 分成「強多/偏多/中性/偏空/強空」五級。強弱資料不足
+(近期資料不到 `STRENGTH_WINDOW_DAYS` 天)的指標,算分時退回跟「普通」一樣的權重(2),
+不會整個被排除在外。
 
-**這組權重(1:2:3)、強的門檻(±5分)都是主觀訂的,不是統計驗證過的數字**——跟強弱標記
-本身的 1.5/0.5 倍門檻一樣,單純是「拿現有的強弱標記做加權」這個直覺想法的實作,之後如果
-使用者想調整權重或改門檻,直接改這幾個常數即可,不用動其他邏輯。
+**只有小道瓊期貨/那斯達克期貨兩個(`SCORE_SYMBOLS`)計入淨分**,費半/台積電ADR只顯示
+各自的漲跌幅跟強弱標記,不參與加總——使用者明確要求這兩個純粹當參考,不要影響「淨分/
+強多偏多中性偏空強空」這個綜合判斷,可能是因為費半/ADR是前一個交易日的現貨收盤價
+(跟小道瓊/那斯達克期貨的近24小時夜盤走勢時間點不同,混在一起加總會模糊掉「最新夜盤
+方向」這個淨分本來想表達的意思)。
+
+**這組權重(1:2:3)、強的門檻都是主觀訂的,不是統計驗證過的數字**——跟強弱標記本身的
+1.5/0.5 倍門檻一樣,單純是「拿現有的強弱標記做加權」這個直覺想法的實作,之後如果使用者
+想調整權重或改門檻,直接改這幾個常數即可,不用動其他邏輯。
 """
 
 import yfinance as yf
@@ -45,13 +51,18 @@ US_MARKET_SYMBOLS = {
     "tsm_adr": ("TSM", "台積電ADR"),
 }
 
+SCORE_SYMBOLS = ("dow_futures", "nasdaq_futures")  # 只有這兩個計入淨分,費半/ADR純參考
+
 STRENGTH_WINDOW_DAYS = 20
 STRENGTH_STRONG_RATIO = 1.5
 STRENGTH_WEAK_RATIO = 0.5
 
 STRENGTH_WEIGHT = {"強": 3, "普通": 2, "弱": 1}
 DEFAULT_STRENGTH_WEIGHT = 2  # 強弱資料不足時,算分退回跟「普通」同等權重
-SCORE_STRONG_THRESHOLD = 5  # 滿分是 4 指標 * 3(強) = 12,約40%當「強多/強空」的門檻
+# 滿分是 SCORE_SYMBOLS 2 個指標 * 3(強) = 6,門檻抓約4(需要至少「兩個都普通以上」或
+# 「一強一弱」的agreement程度)才算「強多/強空」——改成只用2個指標計分後門檻也重新校準過,
+# 不是沿用舊版4指標時代的±5(那個門檻對只剩2個指標來說會變得幾乎打不到)。
+SCORE_STRONG_THRESHOLD = 4
 
 
 def _latest_change(symbol: str) -> dict | None:
@@ -108,20 +119,22 @@ def _score_label(score: float) -> str:
 def get_us_overnight_signal() -> dict:
     """回傳每個指標各自最新漲跌幅(含強弱標記),以及強弱加權後的綜合多空分數。
 
-    `score`:每個指標依強弱給權重(見模組 docstring 的 `STRENGTH_WEIGHT`)、乘上漲跌
-    方向正負號後加總,範圍 -12~+12,正代表偏多、負代表偏空,數值越極端代表訊號越一致
-    越強烈。`score_label` 是對應的五級文字("強多"/"偏多"/"中性"/"偏空"/"強空")。
-    一個資料都抓不到時兩者都回傳 None。
+    `score`:只由 `SCORE_SYMBOLS`(小道瓊期貨+那斯達克期貨)兩個指標依強弱給權重
+    (見模組 docstring 的 `STRENGTH_WEIGHT`)、乘上漲跌方向正負號後加總,範圍 -6~+6,
+    正代表偏多、負代表偏空,數值越極端代表訊號越一致越強烈。費半/台積電ADR不計入,
+    只在回傳的dict裡各自附上漲跌幅跟強弱標記供顯示,不影響這個分數。`score_label` 是
+    對應的五級文字("強多"/"偏多"/"中性"/"偏空"/"強空")。SCORE_SYMBOLS都抓不到資料時
+    兩者都回傳 None。
     """
     results = {key: _latest_change(symbol) for key, (symbol, _) in US_MARKET_SYMBOLS.items()}
 
-    available = [r for r in results.values() if r is not None]
+    scored = [results[key] for key in SCORE_SYMBOLS if results.get(key) is not None]
     score, score_label = None, None
-    if available:
+    if scored:
         score = sum(
             (1 if r["change_pct"] > 0 else (-1 if r["change_pct"] < 0 else 0))
             * STRENGTH_WEIGHT.get(r["strength"], DEFAULT_STRENGTH_WEIGHT)
-            for r in available
+            for r in scored
         )
         score_label = _score_label(score)
 
