@@ -752,7 +752,10 @@ _CHART_HTML_TEMPLATE = """
     wickUpColor: THEME.up, wickDownColor: THEME.down,
   }, 0);
   candleSeries.setData(DATA.candles);
-  candleSeries.priceScale().applyOptions({ scaleMargins: { top: 0.06, bottom: 0.22 } });
+  // top留0.3(原本0.06太小)是為了讓K線的可視範圍不會被左上角浮動圖例(tv-legend,五行文字
+  // 約佔100多px高)蓋到——圖例是絕對定位疊在圖表上面,不會主動避開K線,只能反過來讓價格
+  // 軸的縮放範圍本身就不把最高點的K線畫到圖例那塊區域裡。
+  candleSeries.priceScale().applyOptions({ scaleMargins: { top: 0.3, bottom: 0.22 } });
 
   DATA.supports.forEach(function (s, i) {
     candleSeries.createPriceLine({
