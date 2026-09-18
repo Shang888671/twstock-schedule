@@ -757,10 +757,11 @@ _CHART_HTML_TEMPLATE = """
   // 軸的縮放範圍本身就不把最高點的K線畫到圖例那塊區域裡。
   candleSeries.priceScale().applyOptions({ scaleMargins: { top: 0.3, bottom: 0.22 } });
 
-  // axisLabelVisible關掉:支撐/阻力常常彼此價位很接近(甚至跟現價軸標籤只差幾點),lightweight-
-  // charts的多個createPriceLine軸標籤沒有互相避讓的機制,價位一擠在一起就疊字疊成一坨看不清楚
-  // (使用者截圖回報過)。虛線本身還是畫在K線圖上當視覺參考,實際數字已經在圖表下方的支撐/阻力
-  // 色徽章列表清楚列出,軸標籤只是重複資訊,關掉不影響看得到的資訊量,只是不再擠成一坨。
+  // axisLabelVisible關掉原生軸標籤:支撐/阻力常常彼此價位很接近,lightweight-charts的多個
+  // createPriceLine軸標籤沒有互相避讓機制,價位一擠就疊字疊成一坨看不清楚(使用者截圖回報過)。
+  // 虛線本身照常畫在K線圖上。標籤不是整個拿掉,是改成下面自己畫的tv-levels浮動徽章,用
+  // priceToCoordinate()算出實際像素位置後自己做「最小間距」避讓,才能兩全其美:數字還是
+  // 直接標在圖上(不用像第一版那樣拿掉),但不會再疊在一起。
   DATA.supports.forEach(function (s, i) {
     candleSeries.createPriceLine({
       price: s.price, color: THEME.support, lineWidth: 1,
@@ -813,6 +814,49 @@ _CHART_HTML_TEMPLATE = """
   if (panes[0]) panes[0].setHeight(priceH);
   if (panes[1]) panes[1].setHeight(rsiH);
   if (panes[2]) panes[2].setHeight(macdH);
+
+  // 支撐/阻力浮動徽章(取代原生軸標籤,見上面priceLine的axisLabelVisible:false說明)——
+  // 絕對定位疊在價格pane的右緣,用priceToCoordinate()算出每個價位實際會畫在哪個y像素,
+  // 依y排序後做「相鄰不能小於MIN_GAP」的最小間距避讓(價位越接近的,y座標會被強制推開),
+  // 這樣不管支撐/阻力彼此多接近,徽章永遠讀得清楚,又不用犧牲掉直接標示數字這個功能。
+  const levelsBox = document.createElement('div');
+  levelsBox.id = 'tv-levels';
+  levelsBox.style.cssText = 'position:absolute; top:0; right:2px; z-index:3; pointer-events:none;';
+  document.getElementById('tv-wrap').appendChild(levelsBox);
+
+  const LEVEL_MIN_GAP = 20;
+
+  function renderLevelBadges() {
+    const levels = [];
+    DATA.supports.forEach(function (s, i) {
+      levels.push({ price: s.price, color: THEME.support, text: '支撐' + (i + 1) + ' ' + s.price.toFixed(2) });
+    });
+    DATA.resistances.forEach(function (r, i) {
+      levels.push({ price: r.price, color: THEME.resistance, text: '阻力' + (i + 1) + ' ' + r.price.toFixed(2) });
+    });
+    const positioned = levels
+      .map(function (lv) {
+        return { color: lv.color, text: lv.text, y: candleSeries.priceToCoordinate(lv.price) };
+      })
+      .filter(function (lv) { return lv.y !== null && lv.y !== undefined && lv.y >= 0 && lv.y <= priceH; })
+      .sort(function (a, b) { return a.y - b.y; });
+
+    for (let i = 1; i < positioned.length; i++) {
+      if (positioned[i].y - positioned[i - 1].y < LEVEL_MIN_GAP) {
+        positioned[i].y = positioned[i - 1].y + LEVEL_MIN_GAP;
+      }
+    }
+
+    levelsBox.innerHTML = positioned.map(function (lv) {
+      return `<div style="position:absolute; top:${lv.y - 9}px; right:0; background:${lv.color}; ` +
+        `color:#0b0f1a; font:11px/1.4 Inter,'Noto Sans TC',sans-serif; font-weight:700; ` +
+        `padding:1px 7px; border-radius:4px 0 0 4px; white-space:nowrap;">${lv.text}</div>`;
+    }).join('');
+  }
+
+  renderLevelBadges();
+  chart.timeScale().subscribeVisibleLogicalRangeChange(renderLevelBadges);
+  window.addEventListener('resize', renderLevelBadges);
 
   try {
     LightweightCharts.createTextWatermark(panes[0], {
