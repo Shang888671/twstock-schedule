@@ -377,6 +377,14 @@ def load_history_with_indicators(code, period, otc):
 
 @st.cache_data(ttl=300)
 def load_us_overnight_signal():
+    """包一層st.cache_data降低yfinance呼叫頻率——這個wrapper的快取只認自己(這幾行)的
+    原始碼有沒有變,不會追蹤它呼叫的us_market.get_us_overnight_signal()內部邏輯改了沒。
+    改成只用2個指標計分那次沒有同時動到這個wrapper,結果Streamlit Cloud在process還沒
+    完全重啟前吃到舊邏輯(4指標加總,滿分±12)算出來的舊快取值,畫面顯示的燈號數量是新的
+    (2個)但淨分卻是舊公式算出來的數字(超出新的±6範圍),兩邊對不起來。之後任何一次修改
+    us_market.py的計分/資料邏輯,都要記得順手在這裡也留一點改動(哪怕只是更新這段說明),
+    強制讓快取key跟著變、逼新部署立刻重新計算一次,不要依賴TTL自然過期(這裡TTL=300秒,
+    最壞情況會顯示錯誤數字長達5分鐘)。"""
     return get_us_overnight_signal()
 
 
