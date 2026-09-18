@@ -1655,18 +1655,29 @@ with tab_ai:
             "所以不管股票池多大,主要瓶頸是股票數量本身(逐檔抓股價這段),第一次跑會比較久。"
         )
 
+    def _style_condition_cell(v):
+        # 跟quote-badge的badge-hit/badge-miss維持同一套紅綠燈直覺(達成綠/未達成紅)
+        if v == "達成":
+            return "background-color: rgba(34,197,94,0.16); color: #22c55e; font-weight: 600;"
+        return "background-color: rgba(239,68,68,0.12); color: #ef4444;"
+
     if st.button("🚦 檢查燈號"):
+        # 這裡只負責「算」,算完存進session_state,不直接畫結果——批次掃描動輒跑好幾分鐘,
+        # 跑完之後如果剛好碰上auto_refresh的下一次整頁重跑(st.button()的按下狀態只在
+        # 「這一次」腳本執行有效,下一次重跑不管什麼原因觸發,這個if區塊都不會再進來),
+        # 畫在這個if區塊裡的結果會直接消失,使用者會看到「跑完的瞬間又整個不見」。
+        # 存進session_state、在下面用獨立區塊每次重跑都讀出來畫,才能保證結果會一直留著,
+        # 直到使用者再按一次「檢查燈號」或換股票重新查詢。
         st.session_state["_long_task_running"] = True
         with st.spinner("檢查中..."):
             try:
                 if light_scope == "檢查整個 .dsl 股票池(有個股期貨的標的)":
                     from xq_watchlist import get_stock_futures_codes_from_watchlists
-                    from stock_futures import get_stock_futures_name
                     from signals import scan_light_signals
 
                     codes = sorted(get_stock_futures_codes_from_watchlists())
                     if not codes:
-                        st.warning("找不到 .dsl 自選股清單,請確認 xq_branch_data/ 資料夾裡有匯出的 .dsl 檔案。")
+                        st.session_state["_light_result"] = {"mode": "no_watchlist"}
                     else:
                         progress = st.progress(0.0, text=f"檢查中... 0/{len(codes)}")
 
@@ -1675,48 +1686,59 @@ with tab_ai:
 
                         results = scan_light_signals(codes, progress_callback=_on_light_progress)
                         progress.empty()
-
-                        qualified = [r for r in results if r["passed_count"] >= light_min_count]
-                        if not qualified:
-                            st.info(f"共檢查 {len(results)} 檔股票,沒有股票達成 {light_min_count} 項以上條件。")
-                        else:
-                            st.success(f"共檢查 {len(results)} 檔股票,{len(qualified)} 檔達成 {light_min_count} 項以上條件")
-                            rows = []
-                            condition_labels = [c["label"] for c in qualified[0]["conditions"].values()]
-                            for r in qualified:
-                                row = {
-                                    "代號": r["code"],
-                                    "名稱": get_stock_futures_name(r["code"]) or "",
-                                    "達成數": f"{r['passed_count']}/{r['total']}",
-                                }
-                                for c in r["conditions"].values():
-                                    row[c["label"]] = "達成" if c["passed"] else "未達成"
-                                rows.append(row)
-
-                            def _style_condition_cell(v):
-                                # 取代原本🟢/🔴 emoji,但維持同樣的紅綠燈直覺,呼應上面
-                                # badge-hit/badge-miss那組配色——emoji在批次表格裡也是同一個
-                                # 不受控字型渲染問題
-                                if v == "達成":
-                                    return "background-color: rgba(34,197,94,0.16); color: #22c55e; font-weight: 600;"
-                                return "background-color: rgba(239,68,68,0.12); color: #ef4444;"
-
-                            styled = pd.DataFrame(rows).style.map(_style_condition_cell, subset=condition_labels)
-                            st.dataframe(styled, use_container_width=True, hide_index=True)
+                        st.session_state["_light_result"] = {
+                            "mode": "batch",
+                            "total_checked": len(results),
+                            "qualified": [r for r in results if r["passed_count"] >= light_min_count],
+                            "min_count": light_min_count,
+                        }
                 else:
                     from signals import evaluate_light_signals
 
-                    light_result = evaluate_light_signals(code, df, otc=otc)
-                    st.success(f"{light_result['total']} 個條件中達成 {light_result['passed_count']}/{light_result['total']} 個")
-
-                    light_cols = st.columns(light_result["total"])
-                    for lcol, c in zip(light_cols, light_result["conditions"].values()):
-                        lcol.markdown(_build_condition_badge_html(c["label"], c["passed"]), unsafe_allow_html=True)
-                        lcol.caption(c["detail"])
+                    st.session_state["_light_result"] = {
+                        "mode": "single",
+                        "light_result": evaluate_light_signals(code, df, otc=otc),
+                    }
             except Exception as e:
-                st.error(f"檢查失敗:{e}")
+                st.session_state["_light_result"] = {"mode": "error", "message": str(e)}
             finally:
                 st.session_state["_long_task_running"] = False
+
+    light_state = st.session_state.get("_light_result")
+    if light_state:
+        if light_state["mode"] == "error":
+            st.error(f"檢查失敗:{light_state['message']}")
+        elif light_state["mode"] == "no_watchlist":
+            st.warning("找不到 .dsl 自選股清單,請確認 xq_branch_data/ 資料夾裡有匯出的 .dsl 檔案。")
+        elif light_state["mode"] == "batch":
+            from stock_futures import get_stock_futures_name
+
+            qualified = light_state["qualified"]
+            min_count = light_state["min_count"]
+            if not qualified:
+                st.info(f"共檢查 {light_state['total_checked']} 檔股票,沒有股票達成 {min_count} 項以上條件。")
+            else:
+                st.success(f"共檢查 {light_state['total_checked']} 檔股票,{len(qualified)} 檔達成 {min_count} 項以上條件")
+                rows = []
+                condition_labels = [c["label"] for c in qualified[0]["conditions"].values()]
+                for r in qualified:
+                    row = {
+                        "代號": r["code"],
+                        "名稱": get_stock_futures_name(r["code"]) or "",
+                        "達成數": f"{r['passed_count']}/{r['total']}",
+                    }
+                    for c in r["conditions"].values():
+                        row[c["label"]] = "達成" if c["passed"] else "未達成"
+                    rows.append(row)
+                styled = pd.DataFrame(rows).style.map(_style_condition_cell, subset=condition_labels)
+                st.dataframe(styled, use_container_width=True, hide_index=True)
+        elif light_state["mode"] == "single":
+            light_result = light_state["light_result"]
+            st.success(f"{light_result['total']} 個條件中達成 {light_result['passed_count']}/{light_result['total']} 個")
+            light_cols = st.columns(light_result["total"])
+            for lcol, c in zip(light_cols, light_result["conditions"].values()):
+                lcol.markdown(_build_condition_badge_html(c["label"], c["passed"]), unsafe_allow_html=True)
+                lcol.caption(c["detail"])
     st.markdown("</div>", unsafe_allow_html=True)
 
 # --- 分點掃描 ---
@@ -1767,16 +1789,37 @@ with tab_scan:
         "「個股期貨標的」自選清單(.dsl 檔)。第一次計算要逐檔抓 14 個月股價資料,"
         "會比較久,當天算過的結果會存快取,同一天內重複計算會很快。上市不到 12 個月的新股會被跳過。"
     )
+    def _rs_rating_bg(v):
+        # RS Rating(0~99)用金色底色深淺表示強弱,一眼看出排名高低,不用逐格看數字比大小——
+        # 單一色相由淺到深,是排名/幅度資料常見的視覺分級做法
+        alpha = 0.04 + (v / 99) * 0.34
+        return f"background-color: rgba(234,179,8,{alpha:.2f}); font-weight:600;"
+
+    def _return_pct_color(v):
+        # 報酬率欄位比照全站紅漲綠跌慣例上色,跟其他地方(quote-badge等)是同一套顏色語言
+        try:
+            num = float(str(v).rstrip("%"))
+        except ValueError:
+            return ""
+        if num > 0:
+            return "color: #ef4444;"
+        if num < 0:
+            return "color: #22c55e;"
+        return ""
+
     if st.button("💪 開始計算 RS 排行"):
+        # 只負責算、存進session_state,不直接畫——理由跟上面「🚦檢查燈號」批次掃描完全一樣:
+        # 逐檔抓14個月股價資料動輒跑1~2分鐘以上,跑完那一刻如果直接畫在這個if區塊裡,
+        # 只要接下來auto_refresh的下一次整頁重跑一到(st.button()這次沒被按,if不會進來),
+        # 剛跑出來的結果就會整個消失。存起來、在下面用獨立區塊每次重跑都讀出來畫,才能一直留著。
         st.session_state["_long_task_running"] = True
         try:
             from xq_watchlist import get_stock_futures_codes_from_watchlists
-            from stock_futures import get_stock_futures_name
             from relative_strength import compute_rs_ranking
 
             universe = sorted(get_stock_futures_codes_from_watchlists())
             if not universe:
-                st.warning("找不到 .dsl 自選股清單,請確認 xq_branch_data/ 資料夾裡有匯出的 .dsl 檔案。")
+                st.session_state["_rs_result"] = {"mode": "no_watchlist"}
             else:
                 progress = st.progress(0.0, text=f"計算中... 0/{len(universe)}")
 
@@ -1785,53 +1828,50 @@ with tab_scan:
 
                 ranking = compute_rs_ranking(universe, progress_callback=_on_rs_progress)
                 progress.empty()
-
-                if ranking.empty:
-                    st.info("沒有算出任何股票的 RS 排行(可能股票池裡都是上市不到 12 個月的新股)。")
-                else:
-                    st.success(f"共算出 {len(ranking)} / {len(universe)} 檔股票的 RS 排行")
-                    display = ranking.copy()
-                    display["名稱"] = display["code"].map(lambda c: get_stock_futures_name(c) or "")
-                    for col, label in [("r3m", "近3月報酬"), ("r6m", "近6月報酬"), ("r12m", "近12月報酬")]:
-                        display[label] = display[col].map(lambda x: f"{x*100:+.1f}%")
-                    display = display.rename(columns={"code": "代號", "rs_rating": "RS Rating"})
-
-                    def _rs_rating_bg(v):
-                        # RS Rating(0~99)用金色底色深淺表示強弱,一眼看出排名高低,
-                        # 不用逐格看數字比大小——單一色相由淺到深,是排名/幅度資料
-                        # 常見的視覺分級做法
-                        alpha = 0.04 + (v / 99) * 0.34
-                        return f"background-color: rgba(234,179,8,{alpha:.2f}); font-weight:600;"
-
-                    def _return_pct_color(v):
-                        # 報酬率欄位比照全站紅漲綠跌慣例上色,跟其他地方(quote-badge等)
-                        # 是同一套顏色語言,不是這個表格另外發明的配色
-                        try:
-                            num = float(str(v).rstrip("%"))
-                        except ValueError:
-                            return ""
-                        if num > 0:
-                            return "color: #ef4444;"
-                        if num < 0:
-                            return "color: #22c55e;"
-                        return ""
-
-                    return_cols = ["近3月報酬", "近6月報酬", "近12月報酬"]
-                    styled_ranking = (
-                        display[["代號", "名稱", "RS Rating"] + return_cols]
-                        .style.map(_rs_rating_bg, subset=["RS Rating"])
-                        .map(_return_pct_color, subset=return_cols)
-                    )
-                    st.dataframe(styled_ranking, use_container_width=True, hide_index=True)
-
-                    current_row = ranking[ranking["code"] == code]
-                    if not current_row.empty:
-                        st.caption(f"目前查詢的 {code} 在此排行裡的 RS Rating:{int(current_row.iloc[0]['rs_rating'])}")
-                    elif not otc:
-                        st.caption(f"{code} 不在目前的 .dsl 自選清單股票池裡,所以沒有算入這次排行。")
+                st.session_state["_rs_result"] = {
+                    "mode": "ranking",
+                    "ranking": ranking,
+                    "universe_size": len(universe),
+                    "code": code,
+                    "otc": otc,
+                }
         except Exception as e:
-            st.error(f"RS 排行計算失敗:{e}")
+            st.session_state["_rs_result"] = {"mode": "error", "message": str(e)}
         finally:
             st.session_state["_long_task_running"] = False
+
+    rs_state = st.session_state.get("_rs_result")
+    if rs_state:
+        if rs_state["mode"] == "error":
+            st.error(f"RS 排行計算失敗:{rs_state['message']}")
+        elif rs_state["mode"] == "no_watchlist":
+            st.warning("找不到 .dsl 自選股清單,請確認 xq_branch_data/ 資料夾裡有匯出的 .dsl 檔案。")
+        elif rs_state["mode"] == "ranking":
+            from stock_futures import get_stock_futures_name
+
+            ranking = rs_state["ranking"]
+            if ranking.empty:
+                st.info("沒有算出任何股票的 RS 排行(可能股票池裡都是上市不到 12 個月的新股)。")
+            else:
+                st.success(f"共算出 {len(ranking)} / {rs_state['universe_size']} 檔股票的 RS 排行")
+                display = ranking.copy()
+                display["名稱"] = display["code"].map(lambda c: get_stock_futures_name(c) or "")
+                for col, label in [("r3m", "近3月報酬"), ("r6m", "近6月報酬"), ("r12m", "近12月報酬")]:
+                    display[label] = display[col].map(lambda x: f"{x*100:+.1f}%")
+                display = display.rename(columns={"code": "代號", "rs_rating": "RS Rating"})
+
+                return_cols = ["近3月報酬", "近6月報酬", "近12月報酬"]
+                styled_ranking = (
+                    display[["代號", "名稱", "RS Rating"] + return_cols]
+                    .style.map(_rs_rating_bg, subset=["RS Rating"])
+                    .map(_return_pct_color, subset=return_cols)
+                )
+                st.dataframe(styled_ranking, use_container_width=True, hide_index=True)
+
+                current_row = ranking[ranking["code"] == rs_state["code"]]
+                if not current_row.empty:
+                    st.caption(f"目前查詢的 {rs_state['code']} 在此排行裡的 RS Rating:{int(current_row.iloc[0]['rs_rating'])}")
+                elif not rs_state["otc"]:
+                    st.caption(f"{rs_state['code']} 不在目前的 .dsl 自選清單股票池裡,所以沒有算入這次排行。")
     st.markdown("</div>", unsafe_allow_html=True)
 
