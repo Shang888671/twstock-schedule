@@ -1075,6 +1075,12 @@ if night_signal:
             'color:#8b93a7; font-size:0.85rem;">⚡ 夜盤剛開盤或即時資料暫時無法取得,評分還無法計算。</div>'
         )
 
+    # short_badge_html/short_stat_html 可能是空字串(舊快取或資料不足時)——不能把它們各自
+    # 放在下面 st.markdown 樣板裡自己獨立的一行,那一行會整行縮排完全沒有內容,被 Streamlit
+    # 的 markdown 引擎誤判成「縮排程式碼區塊」的開頭,導致後面所有 HTML 整段變成原始文字
+    # 顯示(這個坑先前在 _build_score_gauge_html 也踩過一次,這次是新的變形:不是「多行HTML」
+    # 而是「單一個可能是空字串的{變數}獨占一行」也會觸發同樣的問題)。改成把整排badge/整排
+    # stat-item先組成一行完整字串,再整個當一個佔位符塞進樣板,樣板裡每一行都保證有實際內容。
     short_badge_html = f'<div class="quote-badge badge-flat">{short_badge_str}</div>' if short_badge_str else ""
     short_avg_volume = night_signal.get("short_avg_volume")
     short_stat_html = (
@@ -1083,21 +1089,27 @@ if night_signal:
         if short_avg_volume is not None
         else ""
     )
+    badge_row_html = (
+        f'<div class="quote-badge badge-flat">{strength_text}{ratio_str}</div>'
+        f'<div class="quote-badge {chg_badge_class}">{chg_str}</div>'
+        f"{short_badge_html}"
+    )
+    stat_row_html = (
+        f'<div class="stat-item"><div class="label">夜盤成交量</div><div class="value">{night_signal["volume"]:,} 口</div></div>'
+        f'<div class="stat-item"><div class="label">近20日均量</div><div class="value">{night_signal["avg_volume"]:,.0f} 口</div></div>'
+        f"{short_stat_html}"
+        f'<div class="stat-item"><div class="label">資料日期</div><div class="value">{night_signal["date"]}</div></div>'
+    )
 
     st.markdown(
         f"""
         <div class="quote-card">
             <div class="quote-symbol">🌆 台指期夜盤參與度</div>
             <div class="quote-price-row">
-                <div class="quote-badge badge-flat">{strength_text}{ratio_str}</div>
-                <div class="quote-badge {chg_badge_class}">{chg_str}</div>
-                {short_badge_html}
+                {badge_row_html}
             </div>
             <div class="stat-row">
-                <div class="stat-item"><div class="label">夜盤成交量</div><div class="value">{night_signal['volume']:,} 口</div></div>
-                <div class="stat-item"><div class="label">近20日均量</div><div class="value">{night_signal['avg_volume']:,.0f} 口</div></div>
-                {short_stat_html}
-                <div class="stat-item"><div class="label">資料日期</div><div class="value">{night_signal['date']}</div></div>
+                {stat_row_html}
             </div>
             {live_block_html}
         </div>
