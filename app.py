@@ -744,7 +744,10 @@ _CHART_HTML_TEMPLATE = """
     grid: { vertLines: { color: THEME.grid }, horzLines: { color: THEME.grid } },
     crosshair: { mode: LightweightCharts.CrosshairMode.Magnet },
     rightPriceScale: { borderVisible: false },
-    timeScale: { borderVisible: false, rightOffset: 3, timeVisible: false },
+    // rightOffset拉大到8(原本3太小):支撐/阻力徽章需要在最新K棒右邊留一塊完全沒有K棒的
+    // 空白帶才擺得下,offset太小的話最新K棒會幾乎貼齊價格軸,徽章不管往左推多少都還是會蓋到
+    // 最新的K棒(見下面renderLevelBadges的動態避讓說明)。
+    timeScale: { borderVisible: false, rightOffset: 8, timeVisible: false },
   });
 
   const candleSeries = chart.addSeries(LightweightCharts.CandlestickSeries, {
@@ -824,6 +827,14 @@ _CHART_HTML_TEMPLATE = """
   // 畫的原生價格軸刻度數字(例如2500.00/2400.00這些整數刻度、還有現價的紅色標籤)——使用者
   // 反映「數值又被遮住了」。改成用`priceScale.width()`量出軸本身實際佔多寬,把徽章往左推到
   // 軸的外側(軸寬+間距),兩邊各佔各的版位,不會互相蓋到。
+  //
+  // **第三次修正**:徽章往左推到軸外側之後,又剛好落在最新幾根K棒上面——rightOffset(K棒
+  // 右邊保留的空白K棒數)原本只有3,不管徽章往左推多少,只要那塊位置還在圖表主體範圍內就會
+  // 蓋到K棒本身。改成兩件事一起做:(1) rightOffset加大到8,讓最新K棒本來就跟價格軸保持
+  // 一段距離;(2) 更重要的是不能只信賴固定offset數字——使用者選的歷史區間從近1個月到5年
+  // 都有,同樣offset在不同區間對應的實際留白像素差很多,所以改用timeToCoordinate()直接
+  // 量出「最新一根K棒實際畫在哪個x像素」,徽章的位置一定要比這個x再往右緣退開一段安全距離,
+  // 不管使用者選什麼時間區間/怎麼縮放都保證不會蓋到任何一根K棒。
   const rightScale = chart.priceScale('right');
   const levelsBox = document.createElement('div');
   levelsBox.id = 'tv-levels';
@@ -835,7 +846,16 @@ _CHART_HTML_TEMPLATE = """
 
   function renderLevelBadges() {
     const axisWidth = (rightScale && typeof rightScale.width === 'function') ? rightScale.width() : 60;
-    levelsBox.style.right = (axisWidth + LEVEL_AXIS_GAP) + 'px';
+    let rightPx = axisWidth + LEVEL_AXIS_GAP;
+
+    if (DATA.candles.length) {
+      const lastX = chart.timeScale().timeToCoordinate(DATA.candles[DATA.candles.length - 1].time);
+      if (lastX !== null && lastX !== undefined) {
+        const neededPx = container.clientWidth - lastX + LEVEL_AXIS_GAP;
+        if (neededPx > rightPx) rightPx = neededPx;
+      }
+    }
+    levelsBox.style.right = rightPx + 'px';
 
     const levels = [];
     DATA.supports.forEach(function (s, i) {
