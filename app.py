@@ -816,17 +816,27 @@ _CHART_HTML_TEMPLATE = """
   if (panes[2]) panes[2].setHeight(macdH);
 
   // 支撐/阻力浮動徽章(取代原生軸標籤,見上面priceLine的axisLabelVisible:false說明)——
-  // 絕對定位疊在價格pane的右緣,用priceToCoordinate()算出每個價位實際會畫在哪個y像素,
+  // 絕對定位疊在價格pane右緣,用priceToCoordinate()算出每個價位實際會畫在哪個y像素,
   // 依y排序後做「相鄰不能小於MIN_GAP」的最小間距避讓(價位越接近的,y座標會被強制推開),
   // 這樣不管支撐/阻力彼此多接近,徽章永遠讀得清楚,又不用犧牲掉直接標示數字這個功能。
+  //
+  // **第二次修正**:第一版把徽章直接貼右緣(right:2px),結果剛好蓋住lightweight-charts自己
+  // 畫的原生價格軸刻度數字(例如2500.00/2400.00這些整數刻度、還有現價的紅色標籤)——使用者
+  // 反映「數值又被遮住了」。改成用`priceScale.width()`量出軸本身實際佔多寬,把徽章往左推到
+  // 軸的外側(軸寬+間距),兩邊各佔各的版位,不會互相蓋到。
+  const rightScale = chart.priceScale('right');
   const levelsBox = document.createElement('div');
   levelsBox.id = 'tv-levels';
-  levelsBox.style.cssText = 'position:absolute; top:0; right:2px; z-index:3; pointer-events:none;';
+  levelsBox.style.cssText = 'position:absolute; top:0; z-index:3; pointer-events:none;';
   document.getElementById('tv-wrap').appendChild(levelsBox);
 
   const LEVEL_MIN_GAP = 20;
+  const LEVEL_AXIS_GAP = 4;
 
   function renderLevelBadges() {
+    const axisWidth = (rightScale && typeof rightScale.width === 'function') ? rightScale.width() : 60;
+    levelsBox.style.right = (axisWidth + LEVEL_AXIS_GAP) + 'px';
+
     const levels = [];
     DATA.supports.forEach(function (s, i) {
       levels.push({ price: s.price, color: THEME.support, text: '支撐' + (i + 1) + ' ' + s.price.toFixed(2) });
@@ -850,7 +860,7 @@ _CHART_HTML_TEMPLATE = """
     levelsBox.innerHTML = positioned.map(function (lv) {
       return `<div style="position:absolute; top:${lv.y - 9}px; right:0; background:${lv.color}; ` +
         `color:#0b0f1a; font:11px/1.4 Inter,'Noto Sans TC',sans-serif; font-weight:700; ` +
-        `padding:1px 7px; border-radius:4px 0 0 4px; white-space:nowrap;">${lv.text}</div>`;
+        `padding:1px 7px; border-radius:4px; white-space:nowrap;">${lv.text}</div>`;
     }).join('');
   }
 
