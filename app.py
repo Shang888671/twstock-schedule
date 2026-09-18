@@ -85,10 +85,10 @@ html, body, [class*="css"] {
 .badge-up { color: var(--tw-up); background: rgba(239,68,68,0.12); }
 .badge-down { color: var(--tw-down); background: rgba(34,197,94,0.12); }
 .badge-flat { color: #9ca3af; background: rgba(156,163,175,0.12); }
-/* 條件達成/未達成徽章——用金色(既有的強調色)代表達成,跟漲跌用的紅/綠分開,
-   避免「達成」這種跟價格方向無關的二元狀態被誤讀成漲跌訊號 */
-.badge-hit { color: var(--accent-gold); background: rgba(234,179,8,0.14); }
-.badge-miss { color: #6b7280; background: rgba(107,114,128,0.12); }
+/* 條件達成/未達成徽章——維持使用者習慣的紅綠燈直覺(達成=綠、未達成=紅),
+   跟quote-badge的漲跌紅綠是不同語意脈絡,不會混在一起看 */
+.badge-hit { color: #22c55e; background: rgba(34,197,94,0.14); }
+.badge-miss { color: #ef4444; background: rgba(239,68,68,0.12); }
 
 .stat-row { display: flex; gap: 2.2rem; flex-wrap: wrap; }
 .stat-item .label { color: #8b93a7; font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.4px; }
@@ -468,9 +468,8 @@ def _build_participation_gauge_html(score100: float) -> str:
 
 def _build_condition_badge_html(label: str, passed: bool) -> str:
     """🚦條件達成燈號用的狀態徽章,取代原本的🟢/🔴 emoji——emoji在不同系統/字型下顏色不受控,
-    跟頁面其他地方統一用CSS色點+文字的視覺語言(見quote-badge)不一致。用金色代表達成、
-    灰色代表未達成(badge-hit/badge-miss,定義在CSS裡),不用紅/綠是為了不跟「漲跌方向」的
-    顏色語意混在一起——這裡是「條件成立與否」,不是多空訊號。"""
+    跟頁面其他地方統一用CSS色點+文字的視覺語言(見quote-badge)不一致,改用CSS徽章維持一樣的
+    紅綠燈直覺(達成=綠、未達成=紅,badge-hit/badge-miss,定義在CSS裡)。"""
     badge_class = "badge-hit" if passed else "badge-miss"
     status_text = "達成" if passed else "未達成"
     return (
@@ -1695,12 +1694,12 @@ with tab_ai:
                                 rows.append(row)
 
                             def _style_condition_cell(v):
-                                # 取代原本🟢/🔴 emoji——用金色底色代表達成,呼應報告上方
-                                # badge-hit/badge-miss那組配色,emoji在批次表格裡也是同一個
+                                # 取代原本🟢/🔴 emoji,但維持同樣的紅綠燈直覺,呼應上面
+                                # badge-hit/badge-miss那組配色——emoji在批次表格裡也是同一個
                                 # 不受控字型渲染問題
                                 if v == "達成":
-                                    return "background-color: rgba(234,179,8,0.16); color: #eab308; font-weight: 600;"
-                                return "color: #6b7280;"
+                                    return "background-color: rgba(34,197,94,0.16); color: #22c55e; font-weight: 600;"
+                                return "background-color: rgba(239,68,68,0.12); color: #ef4444;"
 
                             styled = pd.DataFrame(rows).style.map(_style_condition_cell, subset=condition_labels)
                             st.dataframe(styled, use_container_width=True, hide_index=True)
