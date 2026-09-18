@@ -198,7 +198,7 @@ with st.sidebar:
     if auto_refresh:
         _auto_refresh_tick()
     keep_screen_awake = st.checkbox(
-        "🔆 螢幕保持常亮", value=False,
+        "🔆 螢幕保持常亮", value=True,
         help="開著這個分頁時不讓螢幕自動變暗/鎖定,關掉這個開關或關掉分頁就恢復系統原本的省電設定。"
              "靠瀏覽器內建的Screen Wake Lock API,不用另外裝任何東西——桌面版Chrome/Edge/最新版"
              "Safari都支援,少數瀏覽器不支援的話就是沒作用、不會報錯。",
