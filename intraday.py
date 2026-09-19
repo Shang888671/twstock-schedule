@@ -122,6 +122,37 @@ def _parse_depth(raw: dict, key: str) -> list[float]:
     return values
 
 
+def _parse_quote_item(raw: dict, fallback_symbol: str) -> dict:
+    """把 TWSE MIS 回應裡單一檔的原始dict轉成統一格式——單檔查詢(get_intraday_quote)跟
+    批次查詢(get_intraday_quotes_batch)共用同一套解析邏輯,不要各自維護一份容易漏改。"""
+    volume_lots = _parse_float(raw, "v")
+    bid_volumes = _parse_depth(raw, "g")
+    ask_volumes = _parse_depth(raw, "f")
+
+    # 頂層的 "z"(最後成交價)常常在兩筆成交之間的空檔是"-"(還沒等到下一筆成交更新這個
+    # 欄位),但巢狀的 "trade" 物件(例如 {"t":"13:21:50","v":1,"z":"2420.0000"})這時候
+    # 通常還留著「上一筆真的成交」的價格跟時間——實測台積電盤中用這個當退路,比直接回傳
+    # None(害呼叫端誤以為抓不到資料、整段降級成yfinance延遲報價)更接近真正即時。
+    last_price = _parse_float(raw, "z")
+    if last_price is None:
+        last_price = _parse_float(raw.get("trade") or {}, "z")
+
+    return {
+        "symbol": raw.get("ch", fallback_symbol),
+        "name": raw.get("n"),
+        "last_price": last_price,
+        "open": _parse_float(raw, "o"),
+        "day_high": _parse_float(raw, "h"),
+        "day_low": _parse_float(raw, "l"),
+        "previous_close": _parse_float(raw, "y"),
+        "volume": volume_lots * 1000 if volume_lots is not None else None,
+        "bid_volumes": bid_volumes,
+        "ask_volumes": ask_volumes,
+        "time": raw.get("t") or raw.get("ot"),
+        "date": raw.get("d"),
+    }
+
+
 def get_intraday_quote(code: str, otc: bool = False) -> dict | None:
     """打 TWSE MIS 即時報價 API,回傳目前成交價/開高低/昨收/累積量/五檔委買委賣。
 
@@ -145,34 +176,53 @@ def get_intraday_quote(code: str, otc: bool = False) -> dict | None:
     msg_array = data.get("msgArray") or []
     if not msg_array:
         return None
-    raw = msg_array[0]
+    return _parse_quote_item(msg_array[0], ex_ch)
 
-    volume_lots = _parse_float(raw, "v")
-    bid_volumes = _parse_depth(raw, "g")
-    ask_volumes = _parse_depth(raw, "f")
 
-    # 頂層的 "z"(最後成交價)常常在兩筆成交之間的空檔是"-"(還沒等到下一筆成交更新這個
-    # 欄位),但巢狀的 "trade" 物件(例如 {"t":"13:21:50","v":1,"z":"2420.0000"})這時候
-    # 通常還留著「上一筆真的成交」的價格跟時間——實測台積電盤中用這個當退路,比直接回傳
-    # None(害呼叫端誤以為抓不到資料、整段降級成yfinance延遲報價)更接近真正即時。
-    last_price = _parse_float(raw, "z")
-    if last_price is None:
-        last_price = _parse_float(raw.get("trade") or {}, "z")
+BATCH_CHUNK_SIZE = 100  # ex_ch可以用"|"分隔一次查多檔,已實測TWSE MIS這個端點真的支援
+                        # (回應msgArray會包含每一檔各自的資料)。切成100檔一批是保守值,
+                        # 避免單次URL太長或單批延遲過久,批次之間依序打完。
 
-    return {
-        "symbol": raw.get("ch", ex_ch),
-        "name": raw.get("n"),
-        "last_price": last_price,
-        "open": _parse_float(raw, "o"),
-        "day_high": _parse_float(raw, "h"),
-        "day_low": _parse_float(raw, "l"),
-        "previous_close": _parse_float(raw, "y"),
-        "volume": volume_lots * 1000 if volume_lots is not None else None,
-        "bid_volumes": bid_volumes,
-        "ask_volumes": ask_volumes,
-        "time": raw.get("t") or raw.get("ot"),
-        "date": raw.get("d"),
-    }
+
+def get_intraday_quotes_batch(targets: list[tuple[str, bool]]) -> dict[tuple[str, bool], dict]:
+    """一次查多檔即時報價,targets是[(code, otc), ...],回傳{(code, otc): quote_dict}——
+    查無資料的標的不會出現在結果裡,呼叫端用.get()取,語意跟get_intraday_quote()回傳None
+    一致。
+
+    背景監控(alert_monitor.py)要同時盯幾十~幾百檔股票時,一檔一檔打get_intraday_quote()
+    會讓每一輪輪詢時間隨監控檔數線性增加,實測確認這個TWSE MIS端點本身就支援用"|"分隔
+    一次查多檔,改用這個函式後監控幾百檔也只要幾次API呼叫就能查完一輪,不會拖慢輪詢間隔
+    (見alert_monitor.py改用這個函式的說明)。
+
+    比對回應項目屬於哪個(code, otc)是用回應本身的"c"(代號)/"ex"(市場別tse或otc)欄位,
+    不是自己組字串去對——實測發現回應msgArray的順序不保證跟請求的ex_ch順序一致,一定要
+    用回應內容本身的欄位反查,不能假設第N筆回應對應第N個請求的symbol。
+    """
+    if not targets:
+        return {}
+    session = _get_primed_session()
+    ex_ch_list = [f"{'otc' if otc else 'tse'}_{code}.tw" for code, otc in targets]
+
+    results: dict[tuple[str, bool], dict] = {}
+    for i in range(0, len(ex_ch_list), BATCH_CHUNK_SIZE):
+        chunk = ex_ch_list[i : i + BATCH_CHUNK_SIZE]
+        try:
+            resp = session.get(
+                TWSE_MIS_QUOTE_URL,
+                params={"ex_ch": "|".join(chunk), "json": 1, "delay": 0},
+                headers=HEADERS,
+                timeout=20,
+            )
+            data = resp.json()
+        except Exception:
+            continue
+        for raw in data.get("msgArray") or []:
+            code = raw.get("c")
+            if not code:
+                continue
+            key = (code, raw.get("ex") == "otc")
+            results[key] = _parse_quote_item(raw, raw.get("ch", code))
+    return results
 
 
 def _clip(x: float, lo: float = -1.0, hi: float = 1.0) -> float:

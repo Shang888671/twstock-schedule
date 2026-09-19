@@ -85,9 +85,8 @@ class _WatchState:
         self.last_notified_at = 0.0
 
 
-def _check_one(target: dict, state: _WatchState) -> None:
-    label, mis_code, mis_otc = target["label"], target["code"], target["otc"]
-    iq = intraday.get_intraday_quote(mis_code, mis_otc)
+def _check_one(target: dict, iq: dict | None, state: _WatchState) -> None:
+    label = target["label"]
     if iq is None or iq["last_price"] is None:
         print(f"[{_now_str()}] {label}: 資料暫時無法取得")
         return
@@ -126,10 +125,19 @@ def _check_one(target: dict, state: _WatchState) -> None:
 
 
 def main() -> None:
-    states = {t["label"]: _WatchState() for t in alert_config.WATCH_LIST}
-    labels = "、".join(t["label"] for t in alert_config.WATCH_LIST)
-    print(f"開始監控:{labels}(Ctrl+C 結束)")
-    send_telegram_message(f"🟢 盤中急殺警示監控已啟動,監控標的:{labels}")
+    # state用(code, otc)當key,不用label——247檔規模的監控清單裡不同代號的中文名稱理論上
+    # 可能重複(例如簡稱雷同),用label當key有極小機率互相覆蓋掉對方的歷史價格緩衝區,
+    # (code, otc)才是真正唯一的識別。
+    states = {(t["code"], t["otc"]): _WatchState() for t in alert_config.WATCH_LIST}
+    label_list = [t["label"] for t in alert_config.WATCH_LIST]
+    # 監控清單一多(例如整份.dsl自選股),Telegram訊息塞滿幾百個名字反而看不清楚,超過10檔
+    # 就只顯示前幾檔+總數,不然LINE/Telegram訊息長度也可能被截斷。
+    if len(label_list) <= 10:
+        labels_display = "、".join(label_list)
+    else:
+        labels_display = "、".join(label_list[:8]) + f" 等共{len(label_list)}檔"
+    print(f"開始監控:{labels_display}(Ctrl+C 結束)")
+    send_telegram_message(f"🟢 盤中急殺警示監控已啟動,監控標的:{labels_display}")
 
     # 記錄「上一輪看到的ALERT_ENABLED」,只在狀態真的改變(開→關、關→開)時才推播通知,
     # 不然每次迴圈都重複發同一句「已暫停」訊息。用 getattr 給預設值True,是因為使用者
@@ -159,8 +167,16 @@ def main() -> None:
                 continue
 
             if intraday.is_market_open_now():
+                # 改用批次查詢(見intraday.get_intraday_quotes_batch的說明)——監控清單
+                # 一多(例如整份247檔的.dsl自選股),一檔一檔打API會讓單輪輪詢時間隨監控
+                # 檔數線性增加,遠超過POLL_INTERVAL_SECONDS;TWSE MIS這個端點本身就支援
+                # 一次查多檔,幾百檔也只要幾次API呼叫就能查完一輪。
+                quotes = intraday.get_intraday_quotes_batch(
+                    [(t["code"], t["otc"]) for t in alert_config.WATCH_LIST]
+                )
                 for target in alert_config.WATCH_LIST:
-                    _check_one(target, states[target["label"]])
+                    key = (target["code"], target["otc"])
+                    _check_one(target, quotes.get(key), states[key])
                 time.sleep(POLL_INTERVAL_SECONDS)
             else:
                 print(f"[{_now_str()}] 非交易時段,{CLOSED_MARKET_CHECK_SECONDS}秒後再檢查")

@@ -248,7 +248,11 @@ def _load_isin_name_table(otc: bool, force_refresh: bool = False) -> pd.DataFram
         return pd.read_csv(cache_path, dtype=str)
 
     resp = requests.get(ISIN_LIST_URLS[otc], headers=HEADERS, timeout=20)
-    resp.encoding = "big5"
+    # 用cp950不用big5——Python內建的"big5"codec是嚴格版,TWSE這個頁面裡有些字(例如
+    # 宏碁的「碁」)其實是ETen擴充區的byte,標準big5解不出來會變成U+FFFD亂碼(股票名稱
+    # 少一兩個字);cp950是微軟的超集,同一批byte能正確解出來,兩者介面完全相容,直接換掉
+    # 就好(這次做249檔監控清單時對到宏碁的名稱解析錯誤才發現這個問題)。
+    resp.encoding = "cp950"
     tables = pd.read_html(StringIO(resp.text))
     table = max(tables, key=len)
 
