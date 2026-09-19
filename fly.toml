@@ -1,12 +1,22 @@
-# fly.io 部署設定——只跑 alert_monitor.py 這支背景推播腳本,沒有對外服務(不開任何port),
-# 所以特地不寫 [http_service]/[[services]],這樣 fly.io 才不會誤判「沒有流量就自動關機」
-# (那個省電機制只套用在有對外服務的App上)。app名稱在fly.io是全域唯一,如果部署時
-# 顯示名稱被佔用,把下面這行的名稱換一個再試就好。
+# fly.io 完整版部署設定——alert_monitor + supercronic + 每日自動更新
+
 app = "twstock-reversal-alert"
 primary_region = "nrt"
 
 [build]
+  dockerfile = "Dockerfile"
 
 [[vm]]
   size = "shared-cpu-1x"
   memory = "256mb"
+
+# 設定環境變數（非敏感資料）
+[env]
+  # 每日排程時間（僅供參考，實際在 crontab 裡設定）
+  DAILY_UPDATE_HOUR = "7"
+  DAILY_UPDATE_MINUTE = "30"
+  TZ = "Asia/Taipei"
+
+# 敏感資料用 fly secrets 設定：
+#   fly secrets set TELEGRAM_BOT_TOKEN=...
+#   fly secrets set TELEGRAM_CHAT_ID=...

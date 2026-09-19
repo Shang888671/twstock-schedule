@@ -8,3 +8,13 @@
 !reversal_alert.py
 !alert_config_cloud.py
 !Dockerfile
+!start.sh
+!crontab
+!chip_data.py
+!fetch_data.py
+!margin_data.py
+!database.py
+!risk.py
+!daily_update.py
+!morning_brief.py
+!signals_wall.py

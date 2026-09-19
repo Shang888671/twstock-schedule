@@ -4,6 +4,11 @@ __pycache__/
 
 # 本機快取(執行時自動重建,不用進版控)
 data_cache/
+# SQLite 資料庫（自動生成，不進版控）
+data_cache/stock.db
+data_cache/stock.db-journal
+data_cache/stock.db-shm
+data_cache/stock.db-wal
 
 # 使用者手動維護的個人資料(XQ 匯出的分點 CSV、自選股 .dsl 清單)——
 # 這些是個人交易資料,不應該上傳到公開的 GitHub repo

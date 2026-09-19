@@ -1,0 +1,10 @@
+# Crontab for supercronic (fly.io)
+# 每日 15:30 執行盤後更新（台灣時間 = UTC+8，所以是 UTC 07:30）
+# 只在本機是工作日時執行，daily_update.py 內部會判斷是否交易日
+30 7 * * * cd /app && python daily_update.py >> /tmp/daily_update.log 2>&1
+
+# 每日 08:00 盤前快報（台北時間 08:00 = UTC 00:00），週一到週五
+0 0 * * 1-5 cd /app && python morning_brief.py >> /tmp/morning_brief.log 2>&1
+
+# 每日 15:45 掃描訊號牆（UTC 07:45 = 台北 15:45），錯開 daily_update.py 的 07:30
+45 7 * * 1-5 cd /app && python signals_wall.py >> /tmp/signals_wall.log 2>&1

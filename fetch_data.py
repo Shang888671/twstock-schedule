@@ -6,6 +6,7 @@
 3. 上櫃即時報價改打 TWSE MIS（而非 yfinance 的延遲資料）
 4. get_history() 仍用 Yahoo Finance（TWSE MIS 無歷史查詢能力）
 5. 自動判斷上市/上櫃，選擇對應端點
+6. get_history() 使用 SQLite 快取（每日刷新），避免重複呼叫 yfinance
 """
 
 import time
@@ -26,33 +27,33 @@ logger = logging.getLogger(__name__)
 
 _TAIPEI_TZ = ZoneInfo("Asia/Taipei")
 
-ISIN_LIST_URLS = {
+ISIN_LIST_URLS: dict[bool, str] = {
     False: "https://isin.twse.com.tw/isin/C_public.jsp?strMode=2",
     True: "https://isin.twse.com.tw/isin/C_public.jsp?strMode=4",
 }
-CACHE_DIR = Path(__file__).parent / "data_cache"
+CACHE_DIR: Path = Path(__file__).parent / "data_cache"
 CACHE_DIR.mkdir(exist_ok=True)
-CACHE_TTL_SECONDS = 7 * 86400
+CACHE_TTL_SECONDS: int = 7 * 86400
 
-HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+HEADERS: dict[str, str] = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
 
-_TWSE_MIS_QUOTE_URL = "https://mis.twse.com.tw/stock/api/getStockInfo.jsp"
-_TWSE_MIS_INDEX_URL = "https://mis.twse.com.tw/stock/index.jsp"
+_TWSE_MIS_QUOTE_URL: str = "https://mis.twse.com.tw/stock/api/getStockInfo.jsp"
+_TWSE_MIS_INDEX_URL: str = "https://mis.twse.com.tw/stock/index.jsp"
 
-_TPEX_INDEX_URL = "https://www.tpex.org.tw/openapi/v1/tpex_index"
-_TPEX_DAILY_TRADING_INDEX_URL = "https://www.tpex.org.tw/openapi/v1/tpex_daily_trading_index"
-_TPEX_HEADERS = {
+_TPEX_INDEX_URL: str = "https://www.tpex.org.tw/openapi/v1/tpex_index"
+_TPEX_DAILY_TRADING_INDEX_URL: str = "https://www.tpex.org.tw/openapi/v1/tpex_daily_trading_index"
+_TPEX_HEADERS: dict[str, str] = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
     "If-Modified-Since": "Mon, 26 Jul 1997 05:00:00 GMT",
     "Cache-Control": "no-cache",
     "Pragma": "no-cache",
 }
 
-_OTC_INDEX_HISTORY_CACHE = CACHE_DIR / "otc_index_history.csv"
+_OTC_INDEX_HISTORY_CACHE: Path = CACHE_DIR / "otc_index_history.csv"
 
 _session: requests.Session | None = None
 _mis_session: requests.Session | None = None
-_mis_session_primed = False
+_mis_session_primed: bool = False
 
 
 def _get_session() -> requests.Session:
@@ -296,7 +297,30 @@ def update_otc_index_history_cache() -> pd.DataFrame:
     return result_df
 
 
-def get_history(code: str, period: str = "1y", interval: str = "1d", otc: bool = False, start=None, end=None) -> pd.DataFrame:
+def get_history(
+    code: str,
+    period: str = "1y",
+    interval: str = "1d",
+    otc: bool = False,
+    start: str | None = None,
+    end: str | None = None,
+) -> pd.DataFrame:
+    """取得歷史 OHLCV 資料，使用 SQLite 快取（每日刷新）。
+
+    先查 SQLite，快取未過期則直接回傳；否則打 yfinance 並寫入快取。
+    """
+    from database import init_db, get_history as db_get_history, upsert_history
+
+    init_db()
+
+    # 只有使用 period（未指定 start/end）時才用快取
+    if start is None and end is None:
+        cached = db_get_history(code, period=period)
+        if cached is not None and not cached.empty:
+            logger.info(f"[{code}] 使用 SQLite 歷史快取（{len(cached)} 筆）")
+            return cached
+
+    # 無快取或指定日期範圍：打 yfinance
     symbol = to_yf_symbol(code, otc)
     ticker = yf.Ticker(symbol)
     if start or end:
@@ -304,6 +328,12 @@ def get_history(code: str, period: str = "1y", interval: str = "1d", otc: bool =
     else:
         df = ticker.history(period=period, interval=interval)
     df.index.name = "date"
+
+    # 只有使用 period 時才寫入快取
+    if start is None and end is None and not df.empty:
+        upsert_history(df, code)
+        logger.info(f"[{code}] 已寫入 SQLite 歷史快取（{len(df)} 筆）")
+
     return df
 
 

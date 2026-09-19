@@ -37,6 +37,7 @@ from us_market import (
     STRENGTH_WEIGHT,
     SCORE_STRONG_THRESHOLD,
 )
+from risk_dashboard import render_risk_dashboard
 from xq_branch import XQ_BRANCH_DIR
 
 LOGO_PATH = Path(__file__).parent / "assets" / "logo.png"
@@ -66,6 +67,16 @@ CSS = """
     --accent-gold: #eab308;
     --card-bg: #0e1223;
     --card-border: rgba(255,255,255,0.07);
+}
+
+/* 響應式設計：手機版 */
+@media (max-width: 768px) {
+  .block-container { padding: 0.5rem !important; max-width: 100% !important; }
+  .quote-price { font-size: 2rem !important; }
+  .stat-row { gap: 0.8rem !important; }
+  .quote-card { padding: 0.8rem 1rem !important; }
+  .section-card { padding: 0.8rem 1rem !important; }
+  .app-header h1 { font-size: 1.2rem !important; }
 }
 
 html, body, [class*="css"] {
@@ -294,6 +305,7 @@ with st.sidebar:
             height=32,
         )
     st.divider()
+    st.markdown("### 📊 查詢標的")
     query_mode = st.radio("查詢標的", ["個股", "加權指數", "櫃買指數"], horizontal=True)
     if query_mode == "個股":
         code = st.text_input("股票代號", value="2330", help="輸入純數字代號,例如 2330")
@@ -311,6 +323,8 @@ with st.sidebar:
         )
     period = st.selectbox("歷史資料區間", ["3mo", "6mo", "1y", "2y", "5y"], index=2)
     st.divider()
+
+    st.markdown("### ⚠️ 警示設定")
 
     # 急殺警示,原本只能在 alert_config.py(背景推播腳本用的設定檔)裡改門檻,網頁上完全
     # 沒有對應的輸入欄位。第一版補了門檻輸入框,但沒勾選任何東西的狀況下警示卡片還是
@@ -401,6 +415,8 @@ with st.sidebar:
 
     st.divider()
 
+    st.markdown("### 📁 資料管理")
+
     # 雲端部署版本沒有本機的 xq_branch_data/(.dsl/CSV 個人資料被 .gitignore 排除,不會上傳
     # 到 GitHub),導致「檢查整個.dsl股票池」「RS排行」「分點掃描」這幾個功能在雲端版本上
     # 會是空的。加這個上傳功能讓使用者可以直接在網頁上把本機匯出的檔案傳上來,存到雲端App
@@ -430,7 +446,7 @@ with st.sidebar:
     st.caption("學習用途,所有數字僅供參考,不構成投資建議。")
 
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=15)
 def load_quote(code, otc):
     return get_quote(code, otc=otc)
 
@@ -706,6 +722,8 @@ def _make_index_reversal_fragment(
 # 資料還是我們自己算好的 indicators.add_indicators() 結果,只是換了一個真正的 TradingView
 # 圖表渲染引擎(十字游標、拖曳縮放、K棒樣式都是原生 TradingView 手感),不是嵌入 TradingView
 # 官方 widget 抓它自己的資料(那樣會跟 EMA6/40/56 等自訂指標脫鉤)。
+
+
 LIGHTWEIGHT_CHARTS_CDN = "https://unpkg.com/lightweight-charts@5/dist/lightweight-charts.standalone.production.js"
 
 CHART_THEME = {
@@ -1314,6 +1332,41 @@ if us_signal:
 else:
     st.warning("美股夜盤資料抓取失敗,暫時無法顯示連動指標。")
 
+# ═══════════════════════════════════════════════════════════════
+# 頂部摘要列 — 固定顯示，切換 tab 也不會消失
+# ═══════════════════════════════════════════════════════════════
+with st.container():
+    last_price = quote.get("last_price") if quote else None
+    prev_close = quote.get("previous_close") if quote else None
+    if last_price and prev_close:
+        change_pct = (last_price / prev_close - 1) * 100 if prev_close else 0
+        change_color = "var(--tw-up)" if change_pct > 0 else "var(--tw-down)" if change_pct < 0 else "#9ca3af"
+        change_emoji = "▲" if change_pct > 0 else "▼" if change_pct < 0 else "▬"
+        day_high = quote.get("day_high")
+        day_low = quote.get("day_low")
+        volume = quote.get("volume")
+        
+        st.markdown(
+            f"""
+            <div style="display:flex; align-items:center; gap:1.5rem; padding:0.8rem 1.2rem; 
+                        background:var(--card-bg); border:1px solid var(--card-border); 
+                        border-radius:12px; margin-bottom:1rem; flex-wrap:wrap;">
+                <div style="font-size:0.85rem; color:#8b93a7;">{display_symbol}</div>
+                <div style="font-size:1.8rem; font-weight:800; color:{change_color}; 
+                            font-variant-numeric:tabular-nums;">{last_price:,.2f}</div>
+                <div style="font-size:1rem; font-weight:700; color:{change_color};">
+                    {change_emoji} {change_pct:+.2f}%
+                </div>
+                <div style="font-size:0.8rem; color:#8b93a7; margin-left:auto;">
+                    {'高 ' + f'{day_high:,.2f}' if day_high else ''} 
+                    {'低 ' + f'{day_low:,.2f}' if day_low else ''} 
+                    {'量 ' + f'{volume:,}' if volume else ''}
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
 # --- 台指期(TX)夜盤參與度(獨立於個股查詢,跟股票代號無關) ---
 # 跟上面的美股夜盤連動指標是不同角度:那個看美股對台股的連動方向,這個看台灣資金自己在
 # 夜盤(15:00~次日05:00)的參與熱度——純粹是量能強弱,不判斷多空方向(見 night_session.py)。
@@ -1839,7 +1892,7 @@ if IS_INDEX:
     _render_chart_section()
     st.stop()
 
-tab_chart, tab_ai, tab_scan = st.tabs(["📊 技術分析", "🎯 做多訊號", "🔎 分點掃描"])
+tab_chart, tab_ai, tab_scan, tab_risk = st.tabs(["📊 技術分析", "🎯 做多訊號", "🔎 分點掃描", "🛡️ 風險"])
 
 with tab_chart:
     _render_chart_section()
@@ -2201,4 +2254,8 @@ with tab_scan:
                 elif not rs_state["otc"]:
                     st.caption(f"{rs_state['code']} 不在目前的 .dsl 自選清單股票池裡,所以沒有算入這次排行。")
     st.markdown("</div>", unsafe_allow_html=True)
+
+# --- 風險儀表板 ---
+with tab_risk:
+    render_risk_dashboard()
 
