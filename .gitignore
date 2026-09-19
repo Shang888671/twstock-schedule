@@ -25,3 +25,4 @@ xq_branch_data/*.xsb
 # alert_monitor.py 的設定檔,含 Telegram Bot Token——只保留 alert_config.example.py
 # 這個範本進版控,真正的 alert_config.py 是使用者自己複製、自己填,不能外流
 alert_config.py
+branch_history/
