@@ -18,6 +18,11 @@
 TELEGRAM_BOT_TOKEN = "在這裡貼上你的Bot Token"
 TELEGRAM_CHAT_ID = "在這裡貼上你的Chat ID"
 
+# branch_win_rate.py(分點勝率化)用的 snowyowl 登入帳密——沒有要用這個功能可以不填,
+# 只有呼叫 branch_win_rate.login() 時才會用到,不影響急殺警示原本的功能。
+SNOWYOWL_PERSON_ID = "在這裡貼上你的snowyowl帳號"
+SNOWYOWL_PERSON_PWD = "在這裡貼上你的snowyowl密碼"
+
 # 盤中警示開啟/關閉的總開關——改成 False 存檔後,alert_monitor.py(如果已經在背景執行)
 # 最多等 PAUSED_CHECK_SECONDS(30秒)就會自動偵測到並暫停,不用重開腳本;改回 True
 # 也一樣自動恢復。想臨時關掉推播(例如開會、不想被打擾)又不想把WATCH_LIST清單刪掉重打時用。
