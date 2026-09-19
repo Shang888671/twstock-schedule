@@ -132,6 +132,15 @@ html, body, [class*="css"] {
 .disclaimer { color: #8b93a7; font-size: 0.8rem; margin-top: 0.6rem; }
 
 [data-testid="stMetricValue"] { font-variant-numeric: tabular-nums; }
+
+/* Streamlit內建行為:腳本重跑時,還沒被新資料替換掉的區塊會自動降到33%透明度
+   (data-stale="true"),等這次重跑結束才恢復,這是為了提示使用者「畫面正在更新」。
+   但這個App每20秒就整頁重跑一次(AUTO_REFRESH_SECONDS),造成畫面每20秒閃一下變暗的
+   感覺,使用者反應「不是電源設定問題,是刷新瞬間變暗」——蓋掉這個效果,內容還是會
+   照常換成新資料,只是不再有視覺上的變暗閃爍。 */
+[data-testid="stElementContainer"][data-stale="true"] {
+    opacity: 1 !important;
+}
 </style>
 """
 st.markdown(CSS, unsafe_allow_html=True)
