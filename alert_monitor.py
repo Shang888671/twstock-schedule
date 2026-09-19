@@ -20,6 +20,11 @@ TWSE MIS,偵測到警示升級時透過 Telegram Bot 主動推播到手機。
 想暫時關掉推播(不想整支腳本停掉重開)時,把 alert_config.py 的 ALERT_ENABLED 改成
 False 存檔就好——腳本會在下一輪(最多 PAUSED_CHECK_SECONDS 秒後)自動偵測到並暫停,
 改回 True 也會自動恢復,不用重新執行這支腳本。
+
+**每日開盤健康回報**:每個交易日開盤後第一輪批次查詢成功就會推播一次「開盤監控運作中」
+訊息(附監控檔數/實際查到檔數),完全獨立於本機或任何App有沒有開著——這支腳本本來就是
+24小時跑在雲端(fly.io)上,使用者只要看手機有沒有收到這則訊息,就能確認系統當天正常
+運作,不需要另外開任何工具確認。
 """
 
 import importlib
@@ -144,6 +149,15 @@ def main() -> None:
     # 可能是從舊版alert_config.py升級上來、還沒加這個欄位,不應該因此直接壞掉。
     last_enabled_state = True
 
+    # 每天開盤後第一次成功查到報價時推播一次「還活著」訊息——起因是使用者要求「不想受
+    # Claude Code這個App有沒有開著影響」確認監控正常運作。這支腳本本來就是24小時跑在
+    # fly.io上、跟本機/App完全獨立,單靠開頭那則「監控已啟動」訊息只在腳本重啟(部署)時
+    # 觸發一次,平常不會再有任何訊息證明「今天早上真的有在跑」,使用者沒辦法只憑手機就
+    # 確認系統健康。改成每個交易日開盤後第一輪批次查詢成功就推播一次,附上「監控幾檔／
+    # 這輪實際查到幾檔」的數字當健康度證據(查到的檔數明顯偏少代表批次查詢可能有問題),
+    # 使用者收到這則訊息本身就是「系統活著」的證明,不用回頭問任何人或開任何App確認。
+    last_daily_ping_date = None
+
     try:
         while True:
             # 每輪都重新載入 alert_config.py,讓使用者存檔修改 ALERT_ENABLED 之後,
@@ -174,6 +188,15 @@ def main() -> None:
                 quotes = intraday.get_intraday_quotes_batch(
                     [(t["code"], t["otc"]) for t in alert_config.WATCH_LIST]
                 )
+
+                today = datetime.now().date()
+                if quotes and today != last_daily_ping_date:
+                    send_telegram_message(
+                        f"☀️ {_now_str()} 開盤監控運作中,監控{len(alert_config.WATCH_LIST)}檔・"
+                        f"本輪成功查到{len(quotes)}檔報價"
+                    )
+                    last_daily_ping_date = today
+
                 for target in alert_config.WATCH_LIST:
                     key = (target["code"], target["otc"])
                     _check_one(target, quotes.get(key), states[key])
