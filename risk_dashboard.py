@@ -103,14 +103,15 @@ def _style_pct(val) -> str:
 
 
 def render_risk_dashboard(total_capital: float | None = None) -> None:
-    """渲染完整風險儀表板。
+    """渲染完整風險儀表板。"""
+    from risk import get_risk_config, set_risk_config
 
-    total_capital: 若為 None 則從 st.session_state["risk_capital"] 讀（若有），否則用 RiskManager 預設。
-    """
+    db_config = get_risk_config()
+
     # ── 資金水位設定 ──
     st.sidebar.markdown("---")
     st.sidebar.markdown("### 💰 風控資金設定")
-    default_capital = total_capital or float(st.session_state.get("risk_capital", 1_000_000))
+    default_capital = total_capital or db_config.get("total_capital", 1_000_000)
     capital = st.sidebar.number_input(
         "總資金（元）",
         min_value=100_000,
@@ -119,7 +120,9 @@ def render_risk_dashboard(total_capital: float | None = None) -> None:
         step=100_000,
         key="risk_capital_input",
     )
-    st.session_state["risk_capital"] = capital
+    # 持久化到 DB
+    if capital != db_config.get("total_capital"):
+        set_risk_config(total_capital=capital)
 
     rm = RiskManager(total_capital=capital)
 
