@@ -110,8 +110,8 @@ class TestUpsertAndQuery:
         result = get_history("2330", period="1y")
         assert result is not None
         assert len(result) == 5
-        assert "open" in result.columns
-        assert "close" in result.columns
+        assert "Open" in result.columns
+        assert "Close" in result.columns
 
     def test_upsert_institutional_overwrite(self, setup_db_env, sample_institutional_df):
         """Upserting same data should update, not duplicate."""

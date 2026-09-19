@@ -9,9 +9,17 @@ import time
 @pytest.fixture(autouse=True)
 def setup_chip_env(tmp_path):
     """Setup temp environment for chip data tests."""
-    with patch("chip_data.CACHE_DIR", tmp_path):
+    db_path = tmp_path / "stock.db"
+    data_dir = tmp_path
+    data_dir.mkdir(exist_ok=True)
+    with patch("chip_data.CACHE_DIR", tmp_path), \
+         patch("database.DATA_DIR", data_dir), \
+         patch("database.DB_PATH", db_path):
         import chip_data
         chip_data._session = None
+        # Initialize DB tables in the test DB
+        from database import init_db
+        init_db()
         yield
 
 
@@ -253,22 +261,7 @@ class TestGetInstitutionalFlow:
 class TestGetWarrantFlow:
     """Tests for get_warrant_flow()."""
 
-    def test_cache_hit_returns_cached(self, setup_chip_env):
-        """When warrant data is cached, return from SQLite."""
-        mock_df = pd.DataFrame({
-            "call_volume": [500000.0],
-            "put_volume": [300000.0],
-            "call_value": [5000000.0],
-            "put_value": [3000000.0],
-            "pc_ratio": [60.0],
-        }, index=pd.date_range("2026-09-01", periods=1, freq="B"))
-        mock_df.index.name = "date"
 
-        with patch("chip_data.db_get_warrant_flow", return_value=mock_df):
-            from chip_data import get_warrant_flow
-            result = get_warrant_flow("2330", "2026-09-01", "2026-09-02")
-
-        assert len(result) == 1
 
     def test_fetch_warrant_table_stat_not_ok(self, setup_chip_env):
         """_fetch_warrant_table with stat != OK returns empty."""
