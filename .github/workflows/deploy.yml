@@ -1,13 +1,32 @@
-# GitHub Actions: 每次 push 到 main 分支自動部署到 fly.io
-name: Deploy to Fly.io
+# GitHub Actions: 先跑測試，人工核准後部署到 fly.io
 
 on:
   push:
     branches: [main]
 
 jobs:
-  deploy:
+  # 第一步：跑測試
+  test:
     runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install dependencies
+        run: pip install pytest pandas
+
+      - name: Run tests
+        run: python -m pytest tests/ -v --tb=short
+
+  # 第二步：部署（需人工核准 + 測試通過）
+  deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    environment: production
     steps:
       - uses: actions/checkout@v4
 
