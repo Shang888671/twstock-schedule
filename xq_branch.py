@@ -49,12 +49,16 @@ def _normalize_branch_name(name: str) -> str:
     return re.sub(r"\s+", "", name)
 
 
-def _match_known_branch(broker_name: str) -> str | None:
+def _match_branch_in_list(broker_name: str, candidates: list[str]) -> str | None:
     normalized = _normalize_branch_name(broker_name)
-    for known in KNOWN_OVERNIGHT_FLIP_BRANCHES:
-        if _normalize_branch_name(known) in normalized:
-            return known
+    for candidate in candidates:
+        if _normalize_branch_name(candidate) in normalized:
+            return candidate
     return None
+
+
+def _match_known_branch(broker_name: str) -> str | None:
+    return _match_branch_in_list(broker_name, KNOWN_OVERNIGHT_FLIP_BRANCHES)
 
 
 def _parse_date_range(title: str):
@@ -130,6 +134,43 @@ def read_call_warrant_broker_ranking(code: str):
         "top1_net_buy_twd": float(top1["net_buy_wan"]) * 10_000,
         "known_branch_matches": known_branch_matches,
     }
+
+
+def match_significant_branches(code: str, ranking: dict | None = None) -> list[dict]:
+    """在權證買方分點排行裡,找出「對這檔股票本身已驗證有效」的分點(來自
+    `branch_win_rate.get_significant_broker_names()`——不是重新發明一套權證專屬的分點
+    名單,是拿已經用歷史買超後表現驗證過的分點來套用到這一筆權證資料),回傳每個命中分點
+    「各自」目前的權證淨買超。**不加總全部分點**——這裡要確認的是「哪個已驗證分點在加碼」,
+    不是「加碼總金額多少」,加總會讓一堆小額分點的雜訊蓋掉真正有意義的單一分點訊號。
+
+    ranking 可以由呼叫端先呼叫 `read_call_warrant_broker_ranking(code)` 傳進來,避免同一份
+    資料被重複讀檔(例如 `signals.evaluate_long_signal()` 同時還要用 top1_broker 等欄位);
+    沒傳就自己讀一次。沒有 CSV 檔案,或這檔股票目前沒有任何已驗證分點(尚未累積夠樣本,
+    或勝率沒過門檻),回傳空 list——呼叫端應該把這個情況當作「條件不成立」,不是錯誤。
+    """
+    from branch_win_rate import get_significant_broker_names
+
+    if ranking is None:
+        ranking = read_call_warrant_broker_ranking(code)
+    if ranking is None:
+        return []
+
+    significant_names = get_significant_broker_names(code)
+    if not significant_names:
+        return []
+
+    hits = []
+    for _, row in ranking["table"].iterrows():
+        matched_name = _match_branch_in_list(row["broker"], significant_names)
+        if matched_name is not None:
+            hits.append(
+                {
+                    "significant_broker": matched_name,
+                    "broker": row["broker"],
+                    "net_buy_wan": float(row["net_buy_wan"]),
+                }
+            )
+    return hits
 
 
 def scan_known_branch_buying(stock_futures_only: bool = False):

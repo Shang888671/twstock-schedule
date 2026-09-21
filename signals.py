@@ -9,10 +9,11 @@
   這筆大額成交金額是買方主導還是賣方主導,大額成交也可能是主力倒貨造成的。這裡用「當天股價
   有沒有收紅」當粗略代理——只算收紅的大額成交,過濾掉收黑(可能是倒貨)的大額成交,不是真正
   的買賣方向判定,只是在沒有逐筆成交+報價資料的前提下,退而求其次的做法。)
-- （選用,第三個條件)個股「認購權證」買方分點,滿足以下任一項就算達標:
-  (a) 使用者指名的「已知隔日沖大戶分點」(見 `xq_branch.KNOWN_OVERNIGHT_FLIP_BRANCHES`)
-      有出現在買方 TOP15 名單裡且買超金額為正,或
-  (b) 沒有已知分點命中時,退回看「當天買超金額排名第1的分點」金額 >= 500 萬元。
+- （選用,第三個條件)個股「認購權證」買方分點裡,有沒有「對這檔股票本身已驗證有效」的分點
+  同時在加碼——分點名單來自 `branch_win_rate.get_significant_broker_names()`(用歷史買超後
+  20日超額報酬勝率驗證過,不是主觀認定的清單),只要其中任何一個分點出現在買方 TOP15 名單裡
+  且買超金額為正,就算達標(見 `xq_branch.match_significant_branches()`)。不加總全部分點的
+  買超金額——重點是「哪個已驗證分點在加碼」,不是金額規模。
   這份資料 TWSE 官網有 CAPTCHA 擋自動查詢,沒辦法自動抓,所以改成使用者自己用 XQ 全球贏家
   手動匯出 CSV、放進 `xq_branch_data/` 資料夾,這個條件才會生效——
   **沒有提供檔案時,直接略過這個條件,只看前兩個條件**(不會因為缺資料就判定失敗)。
@@ -25,14 +26,13 @@
 import pandas as pd
 
 from chip_data import get_institutional_flow, get_stock_call_warrant_detail
-from xq_branch import read_call_warrant_broker_ranking
+from xq_branch import read_call_warrant_broker_ranking, match_significant_branches
 
 INSTITUTIONAL_WINDOW_DAYS = 10
 INSTITUTIONAL_POSITIVE_RATIO_THRESHOLD = 0.7
 WARRANT_WINDOW_DAYS = 1
 WARRANT_SINGLE_TRADE_THRESHOLD = 500_000
 WARRANT_LARGE_TRADE_MIN_COUNT = 1
-BRANCH_TOP1_NET_BUY_THRESHOLD = 5_000_000
 
 # 「條件達成燈號」用的門檻(見 evaluate_light_signals)——這是另一組使用者自訂規則,
 # 跟上面 evaluate_long_signal() 的門檻是分開的兩套規則,不要共用/混淆。
@@ -96,15 +96,9 @@ def evaluate_long_signal(code: str, otc: bool = False) -> dict:
 
     branch = read_call_warrant_broker_ranking(code)
     branch_available = branch is not None
-    known_branch_hits = branch["known_branch_matches"] if branch_available else []
-    known_branch_buying = [h for h in known_branch_hits if h["net_buy_wan"] > 0]
-    if branch_available:
-        if known_branch_buying:
-            branch_signal = True
-        else:
-            branch_signal = branch["top1_net_buy_twd"] >= BRANCH_TOP1_NET_BUY_THRESHOLD
-    else:
-        branch_signal = None
+    significant_hits = match_significant_branches(code, ranking=branch) if branch_available else []
+    significant_buying = [h for h in significant_hits if h["net_buy_wan"] > 0]
+    branch_signal = bool(significant_buying) if branch_available else None
 
     conditions = [institutional_signal, warrant_signal]
     if branch_available:
@@ -129,7 +123,7 @@ def evaluate_long_signal(code: str, otc: bool = False) -> dict:
             {
                 "branch_top1_broker": branch["top1_broker"],
                 "branch_top1_net_buy_wan": branch["top1_net_buy_wan"],
-                "branch_known_hits": known_branch_hits,
+                "branch_significant_hits": significant_hits,
                 "branch_signal": branch_signal,
                 "branch_asof": branch["date_end"],
                 "branch_file": branch["file"],

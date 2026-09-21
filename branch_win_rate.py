@@ -556,6 +556,54 @@ def get_branch_win_rate(broker: str, min_samples: int = MIN_SAMPLES_FOR_WIN_RATE
     return match.iloc[0].to_dict() if not match.empty else None
 
 
+def get_branch_win_rates_for_code(code: str, min_samples: int = MIN_SAMPLES_FOR_WIN_RATE) -> pd.DataFrame:
+    """跟 get_branch_win_rates() 同一套勝率定義,但只用「這一檔股票」自己的買超歷史算——
+    分點的資訊優勢不一定對所有股票都一致(可能只對特定股票準),「這個分點整體準不準」
+    跟「這個分點對這檔股票本身準不準」是兩個不同問題,後者才是 get_significant_broker_names()
+    要回答的。"""
+    history = _resolve_pending_returns(_load_history())
+    history = history[history["code"] == str(code)]
+    if history.empty:
+        return pd.DataFrame(columns=["broker"] + [f"{c}_{w}d" for w in WINDOWS for c in ("n", "win_rate")])
+
+    rows = []
+    for broker, group in history.groupby("broker"):
+        row: dict[str, Any] = {"broker": broker}
+        for w in WINDOWS:
+            resolved = group[f"excess_return_{w}d"].dropna()
+            n = len(resolved)
+            row[f"n_{w}d"] = n
+            row[f"win_rate_{w}d"] = float((resolved > 0).mean()) if n >= min_samples else None
+        rows.append(row)
+
+    result = pd.DataFrame(rows)
+    return result.sort_values("win_rate_20d", ascending=False, na_position="last").reset_index(drop=True)
+
+
+SIGNIFICANT_WIN_RATE_THRESHOLD = 0.6  # 高於這個勝率才算「對這檔股票驗證有效」,不是單純贏過擲硬幣(50%)
+
+
+def get_significant_broker_names(
+    code: str,
+    min_samples: int = MIN_SAMPLES_FOR_WIN_RATE,
+    win_rate_threshold: float = SIGNIFICANT_WIN_RATE_THRESHOLD,
+) -> list[str]:
+    """回傳「對這檔股票本身」買超後20日超額報酬勝率 >= win_rate_threshold、且樣本數已達
+    min_samples 的分點名稱清單——這是用歷史資料驗證過、對這檔股票有實際優勢的分點,
+    給其他訊號模組(例如權證分點加碼確認,見 xq_branch.match_significant_branches())當
+    「已知準分點」的資料來源,取代主觀認定的清單(xq_branch.KNOWN_OVERNIGHT_FLIP_BRANCHES
+    的舊做法)。
+
+    樣本不足(win_rate_20d 是 None)的分點不會出現在這裡——是「還沒累積夠樣本判斷」,
+    不是「驗證過沒用」,呼叫端不該把兩者混為一談。
+    """
+    rates = get_branch_win_rates_for_code(code, min_samples)
+    if rates.empty or "win_rate_20d" not in rates.columns:
+        return []
+    qualified = rates[rates["win_rate_20d"].notna() & (rates["win_rate_20d"] >= win_rate_threshold)]
+    return qualified["broker"].tolist()
+
+
 def save_win_rate_summary(min_samples: int = MIN_SAMPLES_FOR_WIN_RATE) -> pd.DataFrame:
     """算一次完整的分點勝率排行,存成表格檔(`branch_history/branch_win_rates_summary.csv`)
     留下記錄——app.py以後可以直接讀這個檔案,不用每次重算。"""

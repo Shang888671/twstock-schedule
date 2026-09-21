@@ -1967,26 +1967,25 @@ with tab_ai:
                 sc2.caption(f"單一檔權證當天成交金額 ≥ 50 萬且當天收紅才算 1 筆,資料日期 {sig['warrant_asof']}")
 
                 if sig["branch_available"]:
-                    known_hits = sig["branch_known_hits"]
-                    if known_hits:
-                        hit_desc = "、".join(f"{h['known_name']}({h['net_buy_wan']:,.0f}萬)" for h in known_hits)
+                    significant_hits = sig["branch_significant_hits"]
+                    if significant_hits:
+                        hit_desc = "、".join(
+                            f"{h['significant_broker']}({h['net_buy_wan']:,.0f}萬)" for h in significant_hits
+                        )
                         sc3.metric(
-                            "已知隔日沖大戶分點命中",
-                            f"{len(known_hits)} 個",
+                            "已驗證有效分點加碼權證",
+                            f"{len(significant_hits)} 個",
                             delta="達標 ✓" if sig["branch_signal"] else "無買超",
                             delta_color="off",
                         )
                         sc3.caption(f"{hit_desc}(資料日期 {sig['branch_asof']},檔案:{sig['branch_file']})")
                     else:
-                        sc3.metric(
-                            "認購權證買超第1名分點",
-                            f"{sig['branch_top1_net_buy_wan']:,.0f} 萬",
-                            delta="達標 ✓" if sig["branch_signal"] else "未達 500 萬",
-                            delta_color="off",
-                        )
+                        sc3.metric("已驗證有效分點加碼權證", "0 個", delta="未達標", delta_color="off")
                         sc3.caption(
-                            f"{sig['branch_top1_broker']}(沒有命中已知隔日沖大戶分點,改用排名第1當代理指標;"
-                            f"資料日期 {sig['branch_asof']},檔案:{sig['branch_file']})"
+                            f"目前沒有「對這檔股票本身已驗證有效」的分點(branch_win_rate 樣本不足或"
+                            f"沒有分點通過勝率門檻)出現在買方 TOP15 名單裡買超;排名第1的分點是 "
+                            f"{sig['branch_top1_broker']}({sig['branch_top1_net_buy_wan']:,.0f} 萬),僅供參考,"
+                            f"不計入這個條件(資料日期 {sig['branch_asof']},檔案:{sig['branch_file']})"
                         )
                 else:
                     sc3.caption(
