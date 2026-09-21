@@ -2,6 +2,10 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+See also `PROGRESS.md` for what's currently being discussed/worked on per topic (decisions made,
+open todos) — read it before continuing any in-progress work the user references by name
+(e.g. "繼續權證資金流訊號").
+
 ## Commands
 
 - Run the Streamlit UI: `streamlit run app.py`
