@@ -2019,8 +2019,8 @@ if IS_INDEX:
     _render_chart_section()
     st.stop()
 
-tab_chart, tab_ai, tab_scan, tab_risk, tab_option, tab_large_trader = st.tabs(
-    ["📊 技術分析", "🎯 做多訊號", "🔎 分點掃描", "🛡️ 風險", "📐 外資選擇權", "🐘 大額交易人"]
+tab_chart, tab_ai, tab_combined, tab_scan, tab_risk, tab_option, tab_large_trader = st.tabs(
+    ["📊 技術分析", "🎯 做多訊號", "⭐ 整合篩選", "🔎 分點掃描", "🛡️ 風險", "📐 外資選擇權", "🐘 大額交易人"]
 )
 
 with tab_chart:
@@ -2381,6 +2381,112 @@ with tab_scan:
                     st.caption(f"目前查詢的 {rs_state['code']} 在此排行裡的 RS Rating:{int(current_row.iloc[0]['rs_rating'])}")
                 elif not rs_state["otc"]:
                     st.caption(f"{rs_state['code']} 不在目前的 .dsl 自選清單股票池裡,所以沒有算入這次排行。")
+    st.markdown("</div>", unsafe_allow_html=True)
+
+# --- 整合篩選 ---
+with tab_combined:
+    st.markdown('<div class="section-card">', unsafe_allow_html=True)
+    st.markdown('<div class="section-title">⭐ 整合篩選(RS排行 + 條件燈號 + 大盤濾網)</div>', unsafe_allow_html=True)
+    st.caption(
+        "把「💪RS相對強弱排行」跟「🚦條件達成燈號」批次掃描結果用代號合併成一張表,不用自己在"
+        "兩個分頁之間手動對照——股票池跟這兩個分頁一樣是 `.dsl` 個股期貨自選清單。上面另外顯示"
+        "「📐外資選擇權」「🐘大額交易人」兩個大盤濾網的最新讀數,當進場環境的參考——**這是全市場"
+        "層級的單一讀數,不分股票,不會拿來過濾/排序下面的表格**(這兩個訊號的回測都還有"
+        "「回測期間剛好是多頭期間」的但書,還沒驗證過拿來當逐股篩選條件會不會有效)。"
+        "這個分頁不新增任何判斷邏輯,純粹合併顯示既有分頁已經算好的結果。"
+    )
+
+    from combined_screen import get_market_tone
+
+    market_tone = get_market_tone()
+    tone_cols = st.columns(2)
+    for tcol, label in zip(tone_cols, ["外資選擇權", "大額交易人"]):
+        reading = market_tone.get(label)
+        with tcol:
+            if reading is None:
+                st.caption(f"{label}:尚未累積資料")
+            else:
+                tone_class = {"bull": "badge-up", "bear": "badge-down"}[reading["tone"]]
+                st.markdown(
+                    f'<span style="color:#8b93a7; font-size:0.85rem;">{label}</span><br>'
+                    f'<span class="{tone_class}" style="padding:4px 12px; border-radius:8px; font-weight:700;">'
+                    f'{reading["label"]}</span>'
+                    f'<span style="margin-left:8px; color:#8b93a7; font-size:0.85rem;">'
+                    f'(資料日期 {reading["date"].strftime("%Y-%m-%d")})</span>',
+                    unsafe_allow_html=True,
+                )
+
+    st.divider()
+
+    if st.button("⭐ 開始整合篩選"):
+        # 跟🚦/💪兩個分頁同樣的坑:只負責算、存進session_state,不直接畫,理由見那兩個分頁
+        # 按鈕區塊的說明(避免auto_refresh下一次整頁重跑把剛跑出來的結果沖掉)。
+        st.session_state["_long_task_running"] = True
+        with st.spinner("整合篩選中(先算RS排行,再算條件燈號)..."):
+            try:
+                from combined_screen import run_combined_screen
+
+                progress = st.progress(0.0, text="準備中...")
+                stage_labels = {"rs": "RS排行", "light": "條件燈號"}
+
+                def _on_combined_progress(stage, done, total):
+                    label = stage_labels.get(stage, stage)
+                    progress.progress(done / total if total else 1.0, text=f"{label}計算中... {done}/{total}")
+
+                result = run_combined_screen(progress_callback=_on_combined_progress)
+                progress.empty()
+                st.session_state["_combined_screen_result"] = result
+            except Exception as e:
+                st.session_state["_combined_screen_result"] = {"mode": "error", "message": str(e)}
+            finally:
+                st.session_state["_long_task_running"] = False
+
+    combined_state = st.session_state.get("_combined_screen_result")
+    if combined_state:
+        if combined_state["mode"] == "error":
+            st.error(f"整合篩選失敗:{combined_state['message']}")
+        elif combined_state["mode"] == "no_watchlist":
+            st.warning("找不到 .dsl 自選股清單,請確認 xq_branch_data/ 資料夾裡有匯出的 .dsl 檔案。")
+        else:
+            rows = combined_state["rows"]
+            if not rows:
+                st.info("沒有算出任何股票的結果(可能股票池裡都是上市不到12個月的新股)。")
+            else:
+                st.success(f"共合併 {len(rows)} / {combined_state['universe_size']} 檔股票的結果")
+                min_rs = st.slider("只列出 RS Rating 至少多少的股票", min_value=1, max_value=99, value=70, key="combined_min_rs")
+                min_passed = st.slider("同時要求條件達成燈號至少幾項", min_value=0, max_value=7, value=0, key="combined_min_passed")
+
+                filtered = [
+                    r for r in rows
+                    if r["rs_rating"] >= min_rs and (r["passed_count"] or 0) >= min_passed
+                ]
+                if not filtered:
+                    st.info("目前沒有股票同時滿足上面兩個門檻,調低門檻看看。")
+                else:
+                    display_rows = [
+                        {
+                            "代號": r["code"],
+                            "名稱": r["name"],
+                            "RS Rating": r["rs_rating"],
+                            "近3月報酬": f"{r['r3m']*100:+.1f}%",
+                            "近6月報酬": f"{r['r6m']*100:+.1f}%",
+                            "燈號達成": f"{r['passed_count']}/{r['total_conditions']}" if r["passed_count"] is not None else "—",
+                        }
+                        for r in filtered
+                    ]
+                    styled = (
+                        pd.DataFrame(display_rows)
+                        .style.map(_rs_rating_bg, subset=["RS Rating"])
+                        .map(_return_pct_color, subset=["近3月報酬", "近6月報酬"])
+                    )
+                    st.dataframe(styled, use_container_width=True, hide_index=True)
+                    st.caption("點下面展開任一檔股票,可以看到🚦7個條件各自達成與否的細節。")
+                    for r in filtered:
+                        if not r["conditions"]:
+                            continue
+                        with st.expander(f"{r['code']} {r['name']} 的燈號細節"):
+                            for c in r["conditions"].values():
+                                st.markdown(f"{'✅' if c['passed'] else '❌'} {c['label']} — {c['detail']}")
     st.markdown("</div>", unsafe_allow_html=True)
 
 # --- 風險儀表板 ---
