@@ -745,6 +745,119 @@ CHART_THEME = {
     "resistance": "#f472b6",
 }
 
+_OPTION_POSITION_CHART_TEMPLATE = """
+<div id="op-wrap" style="position:relative; width:100%;">
+  <div id="op-legend" style="position:absolute; top:6px; left:10px; z-index:2;
+       font: 12px/1.6 Inter, 'Noto Sans TC', sans-serif; pointer-events:none;
+       background: rgba(14,18,35,0.55); padding:6px 10px; border-radius:8px; backdrop-filter: blur(2px);"></div>
+  <div id="op-chart" style="width:100%;"></div>
+</div>
+<script src="__CDN_URL__"></script>
+<script>
+(function () {
+  const DATA = __DATA_JSON__;
+  const THEME = __THEME_JSON__;
+  const HEIGHT = __HEIGHT__;
+
+  const container = document.getElementById('op-chart');
+  const legend = document.getElementById('op-legend');
+  legend.style.color = THEME.text;
+
+  const chart = LightweightCharts.createChart(container, {
+    width: container.clientWidth,
+    height: HEIGHT,
+    layout: { background: { color: 'transparent' }, textColor: THEME.text, fontFamily: "Inter, 'Noto Sans TC', sans-serif" },
+    grid: { vertLines: { color: THEME.grid }, horzLines: { color: THEME.grid } },
+    crosshair: { mode: LightweightCharts.CrosshairMode.Magnet },
+    rightPriceScale: { borderVisible: false },
+    leftPriceScale: { visible: true, borderVisible: false },
+    timeScale: { borderVisible: false, rightOffset: 4, timeVisible: false },
+  });
+
+  const longSeries = chart.addSeries(LightweightCharts.LineSeries, {
+    color: THEME.up, lineWidth: 2, priceScaleId: 'right', priceLineVisible: false, lastValueVisible: false,
+  });
+  longSeries.setData(DATA.long);
+
+  const shortSeries = chart.addSeries(LightweightCharts.LineSeries, {
+    color: THEME.down, lineWidth: 2, priceScaleId: 'right', priceLineVisible: false, lastValueVisible: false,
+  });
+  shortSeries.setData(DATA.short);
+
+  // 淨額用直方圖畫在左軸,正負分開上色——跟WantGoo那張圖同一種「兩條線(左右軸各自
+  // 獨立刻度)+一組正負分色柱狀」的畫法,不用兩條線硬擠同一個刻度(數量級差很多時會看不清楚)。
+  const netSeries = chart.addSeries(LightweightCharts.HistogramSeries, {
+    priceScaleId: 'left', priceLineVisible: false, lastValueVisible: false,
+  });
+  netSeries.setData(DATA.net);
+
+  try {
+    LightweightCharts.createTextWatermark(chart.panes()[0], {
+      horzAlign: 'center', vertAlign: 'center',
+      lines: [{ text: 'WantGoo玩股網啟發,自算', color: 'rgba(248,250,252,0.06)', fontSize: 22 }],
+    });
+  } catch (e) {}
+
+  function fmt(n) {
+    if (n === undefined || n === null || Number.isNaN(n)) return '--';
+    return Math.round(n).toLocaleString();
+  }
+  function lastVal(arr) { return arr.length ? arr[arr.length - 1].value : null; }
+
+  function renderLegend(longV, shortV, netV) {
+    const netColor = (netV !== null && netV !== undefined && netV < 0) ? THEME.down : THEME.up;
+    legend.innerHTML =
+      '<div style="font-weight:700;margin-bottom:2px;">多空部位</div>' +
+      '<div><span style="color:' + THEME.up + '">多方 ' + fmt(longV) + '</span>&nbsp; ' +
+      '<span style="color:' + THEME.down + '">空方 ' + fmt(shortV) + '</span></div>' +
+      '<div>多空淨額 <span style="color:' + netColor + '">' + fmt(netV) + '</span></div>';
+  }
+  renderLegend(lastVal(DATA.long), lastVal(DATA.short), lastVal(DATA.net));
+
+  chart.subscribeCrosshairMove(function (param) {
+    if (!param || !param.time || !param.seriesData || param.seriesData.size === 0) {
+      renderLegend(lastVal(DATA.long), lastVal(DATA.short), lastVal(DATA.net));
+      return;
+    }
+    const l = param.seriesData.get(longSeries);
+    const s = param.seriesData.get(shortSeries);
+    const n = param.seriesData.get(netSeries);
+    renderLegend(l && l.value, s && s.value, n && n.value);
+  });
+
+  function resize() { chart.applyOptions({ width: container.clientWidth }); }
+  window.addEventListener('resize', resize);
+  resize();
+})();
+</script>
+"""
+
+
+def _build_option_position_chart_html(df: pd.DataFrame, long_col: str, short_col: str, net_col: str, height: int = 320) -> str:
+    """畫外資臺指選擇權合成多空部位/大額交易人未沖銷部位圖(2條線+1組正負分色柱狀),
+    跟K線圖共用lightweight-charts CDN/主題色但版面完全不同(沒有K棒,單一pane雙軸),
+    所以另外寫一個小模板,不硬套_build_tradingview_chart_html那個K線專用的結構。"""
+    rows = df.dropna(subset=[long_col, short_col, net_col])
+    data = {
+        "long": [{"time": r["date"].strftime("%Y-%m-%d"), "value": float(r[long_col])} for _, r in rows.iterrows()],
+        "short": [{"time": r["date"].strftime("%Y-%m-%d"), "value": float(r[short_col])} for _, r in rows.iterrows()],
+        "net": [
+            {
+                "time": r["date"].strftime("%Y-%m-%d"),
+                "value": float(r[net_col]),
+                "color": CHART_THEME["volume_down"] if r[net_col] < 0 else CHART_THEME["volume_up"],
+            }
+            for _, r in rows.iterrows()
+        ],
+    }
+    html = _OPTION_POSITION_CHART_TEMPLATE
+    html = html.replace("__CDN_URL__", LIGHTWEIGHT_CHARTS_CDN)
+    html = html.replace("__DATA_JSON__", json.dumps(data))
+    html = html.replace("__THEME_JSON__", json.dumps(CHART_THEME))
+    html = html.replace("__HEIGHT__", str(height))
+    return html
+
+
 _CHART_HTML_TEMPLATE = """
 <div id="tv-wrap" style="position:relative; width:100%;">
   <div id="tv-legend" style="position:absolute; top:6px; left:10px; z-index:2;
@@ -1689,39 +1802,48 @@ if code == "^TWOII":
         )()
     st.stop()
 
-last_price = quote["last_price"]
-prev_close = quote["previous_close"]
-change = last_price - prev_close if (last_price is not None and prev_close) else None
-change_pct = (change / prev_close * 100) if (change is not None and prev_close) else None
+last_price = quote.get("last_price")
+prev_close = quote.get("previous_close")
 
-if change is None or change == 0:
-    badge_class, arrow = "badge-flat", "▬"
-elif change > 0:
-    badge_class, arrow = "badge-up", "▲"
+if last_price is None:
+    st.warning(f"⚠️ {quote.get('symbol', display_symbol)} 目前無法取得報價(TWSE即時報價與yfinance延遲報價都抓不到,可能是網路問題),下方K線圖/指標若已有歷史快取仍可正常顯示。")
 else:
-    badge_class, arrow = "badge-down", "▼"
+    change = last_price - prev_close if (prev_close is not None) else None
+    change_pct = (change / prev_close * 100) if (change is not None and prev_close) else None
 
-change_str = f"{arrow} {abs(change):.2f} ({abs(change_pct):.2f}%)" if change is not None else "—"
-volume_str = f"{quote['volume'] / 1000:,.0f} 張" if quote["volume"] else "—"  # yfinance 回傳的是股,換算成張(1張=1000股)跟台股慣例一致
+    if change is None or change == 0:
+        badge_class, arrow = "badge-flat", "▬"
+    elif change > 0:
+        badge_class, arrow = "badge-up", "▲"
+    else:
+        badge_class, arrow = "badge-down", "▼"
 
-st.markdown(
-    f"""
-    <div class="quote-card">
-        <div class="quote-symbol">{quote['symbol']} · {name}</div>
-        <div class="quote-price-row">
-            <div class="quote-price">{last_price:,.2f}</div>
-            <div class="quote-badge {badge_class}">{change_str}</div>
+    change_str = f"{arrow} {abs(change):.2f} ({abs(change_pct):.2f}%)" if change is not None else "—"
+    volume = quote.get("volume")
+    volume_str = f"{volume / 1000:,.0f} 張" if volume else "—"  # yfinance 回傳的是股,換算成張(1張=1000股)跟台股慣例一致
+    prev_close_str = f"{prev_close:,.2f}" if prev_close is not None else "—"
+    day_high, day_low = quote.get("day_high"), quote.get("day_low")
+    day_high_str = f"{day_high:,.2f}" if day_high is not None else "—"
+    day_low_str = f"{day_low:,.2f}" if day_low is not None else "—"
+
+    st.markdown(
+        f"""
+        <div class="quote-card">
+            <div class="quote-symbol">{quote.get('symbol', display_symbol)} · {name}</div>
+            <div class="quote-price-row">
+                <div class="quote-price">{last_price:,.2f}</div>
+                <div class="quote-badge {badge_class}">{change_str}</div>
+            </div>
+            <div class="stat-row">
+                <div class="stat-item"><div class="label">昨收</div><div class="value">{prev_close_str}</div></div>
+                <div class="stat-item"><div class="label">最高</div><div class="value">{day_high_str}</div></div>
+                <div class="stat-item"><div class="label">最低</div><div class="value">{day_low_str}</div></div>
+                <div class="stat-item"><div class="label">成交量</div><div class="value">{volume_str}</div></div>
+            </div>
         </div>
-        <div class="stat-row">
-            <div class="stat-item"><div class="label">昨收</div><div class="value">{prev_close:,.2f}</div></div>
-            <div class="stat-item"><div class="label">最高</div><div class="value">{quote['day_high']:,.2f}</div></div>
-            <div class="stat-item"><div class="label">最低</div><div class="value">{quote['day_low']:,.2f}</div></div>
-            <div class="stat-item"><div class="label">成交量</div><div class="value">{volume_str}</div></div>
-        </div>
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
+        """,
+        unsafe_allow_html=True,
+    )
 # 走到這裡的只會是「個股」或「加權指數」,^TWOII 前面已經 st.stop()——兩種情況都適用
 # 同一套「這次到底是MIS即時還是yfinance退回」的說明文字。
 if "date" in quote:  # 有 date/time 欄位代表這次是 TWSE MIS 官方即時報價,不是 yfinance
@@ -1865,6 +1987,11 @@ def _render_chart_section():
     st.markdown('<div class="section-card">', unsafe_allow_html=True)
     st.markdown('<div class="section-title">價格走勢與技術指標</div>', unsafe_allow_html=True)
 
+    if df.empty:
+        st.warning("⚠️ 目前無法取得歷史價格資料(可能是網路問題),K線圖暫時無法顯示。")
+        st.markdown("</div>", unsafe_allow_html=True)
+        return
+
     supports = find_nearest_supports(df)
     resistances = find_nearest_resistances(df)
     chart_html = _build_tradingview_chart_html(
@@ -1892,7 +2019,9 @@ if IS_INDEX:
     _render_chart_section()
     st.stop()
 
-tab_chart, tab_ai, tab_scan, tab_risk = st.tabs(["📊 技術分析", "🎯 做多訊號", "🔎 分點掃描", "🛡️ 風險"])
+tab_chart, tab_ai, tab_scan, tab_risk, tab_option, tab_large_trader = st.tabs(
+    ["📊 技術分析", "🎯 做多訊號", "🔎 分點掃描", "🛡️ 風險", "📐 外資選擇權", "🐘 大額交易人"]
+)
 
 with tab_chart:
     _render_chart_section()
@@ -2257,4 +2386,137 @@ with tab_scan:
 # --- 風險儀表板 ---
 with tab_risk:
     render_risk_dashboard()
+
+# --- 外資選擇權合成部位 ---
+with tab_option:
+    st.markdown('<div class="section-card">', unsafe_allow_html=True)
+    st.markdown('<div class="section-title">📐 外資臺指選擇權合成多空部位</div>', unsafe_allow_html=True)
+    st.caption(
+        "資料來源是期交所官方「三大法人-選擇權買賣權分計」報表(foreign_option_position.py,"
+        "不是抓第三方網站),換算外資及陸資在臺指選擇權(TXO)的未平倉部位:"
+        "合成多単=買進CALL未平倉口數+賣出PUT未平倉口數,合成空単=賣出CALL未平倉口數+"
+        "買進PUT未平倉口數(業界通用的「選擇權轉換成期貨等值部位」公式)。這份報表的官方"
+        "查詢工具目前只能回溯約最近3年,不是完整歷史,累積中。"
+    )
+
+    try:
+        from foreign_option_position import get_history, classify_current_reading
+
+        opt_history = get_history()
+    except Exception as e:
+        opt_history = None
+        st.warning(f"讀取失敗:{e}")
+
+    if opt_history is None or opt_history.empty:
+        st.info("尚未累積外資選擇權合成部位資料——執行 `python foreign_option_position.py --backfill 2023-01-01` 補歷史。")
+    else:
+        reading = classify_current_reading(opt_history)
+        if reading:
+            tone_class = {"bull": "badge-up", "bear": "badge-down"}[reading["tone"]]
+            st.markdown(
+                f'<span class="{tone_class}" style="padding:4px 12px; border-radius:8px; font-weight:700;">'
+                f'{reading["label"]}</span>'
+                f'<span style="margin-left:10px; color:#8b93a7;">'
+                f'淨額比例歷史百分位 {reading["percentile"]:.0f}%'
+                f'(資料日期 {reading["date"].strftime("%Y-%m-%d")})</span>',
+                unsafe_allow_html=True,
+            )
+            st.markdown(
+                f"合成多単 **{reading['synthetic_long_lots']:,.0f}** 口・"
+                f"合成空単 **{reading['synthetic_short_lots']:,.0f}** 口・"
+                f"多空淨額 **{reading['net_lots']:+,.0f}** 口"
+            )
+            st.caption(
+                "📊 多空分界線用0軸(淨額佔合成多空總量的比例>=0算偏多),不是歷史中位數——"
+                "回測過兩種二分法(backtest_foreign_option_position.py,2024-01~2026-09共"
+                "658個交易日),0軸比歷史中位數平分統計上更顯著:20日窗格多89.6% vs 空64.0%"
+                "(p=7e-10)、10日窗格多77.6% vs 空61.2%(p=2.9e-4)、5日窗格多70.8% vs 空"
+                "58.4%(p=6.6e-3)。上面顯示的「歷史百分位」只是輔助資訊(告訴你目前偏多/"
+                "偏空裡面算強還是弱),不是拿來決定多空的依據。**但書**:回測期間剛好是"
+                "一段整體偏多頭的期間(這3個窗格母體基準勝率本身就有63~74%,遠高於隨機的"
+                "50%),測的是加權指數自己的原始報酬,不是像這個repo其他回測那樣拿"
+                "「超額報酬vs大盤」當對照組——沒辦法排除這個關係只是剛好跟這段多頭走勢"
+                "同步、換成空頭或盤整期不一定成立。另外測過「淨額比例的日變化量」(法人"
+                "立場轉變速度)這個維度,24組檢定只有1組壓線顯著,判斷是雜訊,沒有拿來分類。"
+            )
+        else:
+            st.info("資料筆數不足,無法分類。")
+
+        st.markdown("**口數**")
+        components.html(
+            _build_option_position_chart_html(opt_history, "synthetic_long_lots", "synthetic_short_lots", "net_lots"),
+            height=340, scrolling=False,
+        )
+        st.markdown("**契約金額(千元)**")
+        components.html(
+            _build_option_position_chart_html(opt_history, "synthetic_long_value", "synthetic_short_value", "net_value"),
+            height=340, scrolling=False,
+        )
+    st.markdown("</div>", unsafe_allow_html=True)
+
+# --- 大額交易人未沖銷部位 ---
+with tab_large_trader:
+    st.markdown('<div class="section-card">', unsafe_allow_html=True)
+    st.markdown('<div class="section-title">🐘 台指期貨大額交易人未沖銷部位</div>', unsafe_allow_html=True)
+    st.caption(
+        "資料來源是期交所官方「大額交易人未沖銷部位結構表」(large_trader_position.py,"
+        "不是抓第三方網站),台指期貨(TX)前十大交易人的未沖銷部位買方/賣方——量的是"
+        "「少數大戶的多空淨傾向」,跟左邊「外資選擇權」那個分頁(外資身分別的期貨/"
+        "選擇權淨額)是不同商品面向的獨立訊號,不能互相替代。**這個訊號目前是獨立顯示,"
+        "還沒接進「做多訊號」分頁的分點/法人/權證確認邏輯**——2026-09-21使用者決定先"
+        "獨立觀察一段時間再決定要不要疊加進去。"
+    )
+
+    try:
+        from large_trader_position import get_history, classify_current_reading
+
+        lt_history = get_history()
+    except Exception as e:
+        lt_history = None
+        st.warning(f"讀取失敗:{e}")
+
+    if lt_history is None or lt_history.empty:
+        st.info("尚未累積大額交易人部位資料——執行 `python large_trader_position.py backfill 2024-01-02` 補歷史。")
+    else:
+        reading = classify_current_reading(lt_history)
+        if reading:
+            tone_class = {"bull": "badge-up", "bear": "badge-down"}[reading["tone"]]
+            st.markdown(
+                f'<span class="{tone_class}" style="padding:4px 12px; border-radius:8px; font-weight:700;">'
+                f'{reading["label"]}</span>'
+                f'<span style="margin-left:10px; color:#8b93a7;">'
+                f'多空淨傾向歷史百分位 {reading["percentile"]:.0f}%'
+                f'(資料日期 {reading["date"].strftime("%Y-%m-%d")})</span>',
+                unsafe_allow_html=True,
+            )
+            st.markdown(
+                f"前十大買方 **{reading['top10_buy']:,.0f}** 口・"
+                f"前十大賣方 **{reading['top10_sell']:,.0f}** 口・"
+                f"多空淨額 **{reading['top10_net']:+,.0f}** 口"
+            )
+            st.caption(
+                "📊 多空分界線用0軸(前十大交易人買方-賣方>=0算偏多)——回測過"
+                "top5_net_ratio/top10_net_ratio/concentration_top10/inst_net_ratio"
+                "四個候選指標(backtest_large_trader_position.py,2024-01-02~"
+                "2026-09-21共654個交易日),`top10_net_ratio`最強最一致:0軸二分法"
+                "20日窗格高組p=1.2e-6、低組p=3.3e-4。額外做過穩健性檢驗——先用^TWII"
+                "自己近20日走勢切三分位控制掉「是不是已經在漲」,在低/中/高動能三個"
+                "分位內部重新測,20日窗格的高組在三個分位裡全部仍顯著優於該分位自己的"
+                "基準(p=0.028/0.016/0.0000),不是純粹在追蹤大盤趨勢的偽裝。**這裡的"
+                "分類只代表20日方向確認的可信度,5日/10日窗格控制趨勢後證據較弱較零散**"
+                "(`concentration_top10`這個「集中度本身」的假說證據最弱,不建議當方向"
+                "依據)。**但書**:回測期間剛好是一段整體偏多頭的期間(母體基準勝率本身"
+                "就有63~74%),跟`foreign_option_position.py`同一段期間、同一個問題——"
+                "穩健性檢驗只排除了「單純是近20日走勢的偽裝」,不能排除跨越空頭/盤整"
+                "循環後這個關係是否依然成立。"
+            )
+        else:
+            st.info("資料筆數不足,無法分類。")
+
+        st.markdown("**前十大交易人未沖銷部位(口數)**")
+        components.html(
+            _build_option_position_chart_html(lt_history, "top10_buy", "top10_sell", "top10_net"),
+            height=340, scrolling=False,
+        )
+    st.markdown("</div>", unsafe_allow_html=True)
 

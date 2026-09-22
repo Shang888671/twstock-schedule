@@ -15,7 +15,7 @@ RUN apt-get update && apt-get install -y curl \
 
 # 複製所有 Python 模組
 COPY alert_monitor.py intraday.py reversal_alert.py alert_config_cloud.py ./
-COPY chip_data.py fetch_data.py margin_data.py database.py risk.py daily_update.py morning_brief.py signals_wall.py ./
+COPY chip_data.py fetch_data.py margin_data.py database.py risk.py daily_update.py morning_brief.py signals_wall.py foreign_option_position.py large_trader_position.py ./
 COPY crontab start.sh ./
 
 RUN chmod +x start.sh

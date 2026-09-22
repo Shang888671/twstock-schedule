@@ -55,6 +55,7 @@ def rebuild_code_market() -> None:
 
 
 def _get_conn() -> sqlite3.Connection:
+    DATA_DIR.mkdir(exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA synchronous=NORMAL")
@@ -129,6 +130,27 @@ def init_db() -> None:
         CREATE INDEX IF NOT EXISTS idx_warrant_date ON warrant_flow(date);
         CREATE INDEX IF NOT EXISTS idx_history_code ON history_cache(code);
         CREATE INDEX IF NOT EXISTS idx_history_date ON history_cache(date);
+        CREATE TABLE IF NOT EXISTS foreign_option_position (
+            date TEXT NOT NULL PRIMARY KEY,
+            synthetic_long_lots REAL,
+            synthetic_short_lots REAL,
+            net_lots REAL,
+            synthetic_long_value REAL,
+            synthetic_short_value REAL,
+            net_value REAL
+        );
+        CREATE TABLE IF NOT EXISTS large_trader_position (
+            date TEXT NOT NULL PRIMARY KEY,
+            top5_buy INTEGER,
+            top5_sell INTEGER,
+            top10_buy INTEGER,
+            top10_sell INTEGER,
+            total_oi INTEGER,
+            inst_top5_buy INTEGER,
+            inst_top5_sell INTEGER,
+            inst_top10_buy INTEGER,
+            inst_top10_sell INTEGER
+        );
     """)
     conn.commit()
     conn.close()
@@ -517,6 +539,91 @@ def cleanup_history_cache(max_age_hours: int = 48) -> int:
     conn.commit()
     conn.close()
     return deleted
+
+
+def upsert_foreign_option_position(df: pd.DataFrame) -> None:
+    """寫入外資臺指選擇權合成多空部位(見foreign_option_position.py)。
+    df 欄位：date, synthetic_long_lots, synthetic_short_lots, net_lots,
+    synthetic_long_value, synthetic_short_value, net_value。"""
+    if df.empty:
+        return
+    conn = _get_conn()
+    rows = [
+        {
+            "date": row["date"].strftime("%Y-%m-%d") if hasattr(row["date"], "strftime") else str(row["date"]),
+            "synthetic_long_lots": float(row["synthetic_long_lots"]),
+            "synthetic_short_lots": float(row["synthetic_short_lots"]),
+            "net_lots": float(row["net_lots"]),
+            "synthetic_long_value": float(row["synthetic_long_value"]),
+            "synthetic_short_value": float(row["synthetic_short_value"]),
+            "net_value": float(row["net_value"]),
+        }
+        for _, row in df.iterrows()
+    ]
+    conn.executemany("""
+        INSERT OR REPLACE INTO foreign_option_position
+        (date, synthetic_long_lots, synthetic_short_lots, net_lots,
+         synthetic_long_value, synthetic_short_value, net_value)
+        VALUES (:date, :synthetic_long_lots, :synthetic_short_lots, :net_lots,
+                :synthetic_long_value, :synthetic_short_value, :net_value)
+    """, rows)
+    conn.commit()
+    conn.close()
+
+
+def get_foreign_option_position(start_date: str = "2000-01-01", end_date: str | None = None) -> pd.DataFrame:
+    """讀外資臺指選擇權合成多空部位歷史,依日期排序。"""
+    import datetime as _dt
+    end_date = end_date or _dt.date.today().strftime("%Y-%m-%d")
+    conn = _get_conn()
+    df = pd.read_sql_query(
+        """SELECT date, synthetic_long_lots, synthetic_short_lots, net_lots,
+                  synthetic_long_value, synthetic_short_value, net_value
+           FROM foreign_option_position WHERE date >= ? AND date <= ? ORDER BY date""",
+        conn, params=(start_date, end_date), parse_dates=["date"],
+    )
+    conn.close()
+    return df
+
+
+def upsert_large_trader_position(df: pd.DataFrame) -> None:
+    """寫入台指期貨大額交易人未沖銷部位結構(見large_trader_position.py)。
+    df 欄位：date, top5_buy, top5_sell, top10_buy, top10_sell, total_oi,
+    inst_top5_buy, inst_top5_sell, inst_top10_buy, inst_top10_sell。"""
+    if df.empty:
+        return
+    conn = _get_conn()
+    cols = ["top5_buy", "top5_sell", "top10_buy", "top10_sell", "total_oi",
+            "inst_top5_buy", "inst_top5_sell", "inst_top10_buy", "inst_top10_sell"]
+    rows = [
+        {
+            "date": row["date"].strftime("%Y-%m-%d") if hasattr(row["date"], "strftime") else str(row["date"]),
+            **{col: int(row[col]) for col in cols},
+        }
+        for _, row in df.iterrows()
+    ]
+    conn.executemany(f"""
+        INSERT OR REPLACE INTO large_trader_position
+        (date, {", ".join(cols)})
+        VALUES (:date, {", ".join(":" + c for c in cols)})
+    """, rows)
+    conn.commit()
+    conn.close()
+
+
+def get_large_trader_position(start_date: str = "2000-01-01", end_date: str | None = None) -> pd.DataFrame:
+    """讀台指期貨大額交易人未沖銷部位結構歷史,依日期排序。"""
+    import datetime as _dt
+    end_date = end_date or _dt.date.today().strftime("%Y-%m-%d")
+    conn = _get_conn()
+    df = pd.read_sql_query(
+        """SELECT date, top5_buy, top5_sell, top10_buy, top10_sell, total_oi,
+                  inst_top5_buy, inst_top5_sell, inst_top10_buy, inst_top10_sell
+           FROM large_trader_position WHERE date >= ? AND date <= ? ORDER BY date""",
+        conn, params=(start_date, end_date), parse_dates=["date"],
+    )
+    conn.close()
+    return df
 
 
 if __name__ == "__main__":

@@ -157,6 +157,29 @@ def update_margin(target_date: Optional[str] = None, codes: Optional[list[str]] 
         raise
 
 
+@retry(max_attempts=3, backoff_factor=2)
+def update_foreign_option_position() -> None:
+    """更新外資臺指選擇權合成多空部位(見foreign_option_position.py)。跟這個repo其他
+    法人/籌碼資料源不同,這份報表的官方查詢工具支援日期範圍回溯,所以只需要每天補最新
+    幾天(update_latest()),不用像institutional_flow那樣每天append單日快照。"""
+    from foreign_option_position import update_latest
+    logger.info("[Update] 更新外資選擇權合成部位...")
+    count = update_latest()
+    logger.info(f"[Update] 外資選擇權合成部位完成：新增 {count} 個交易日")
+
+
+@retry(max_attempts=3, backoff_factor=2)
+def update_large_trader_position() -> None:
+    """更新台指期貨大額交易人未沖銷部位結構(見large_trader_position.py)。
+    `update_latest()`在本機SQLite還沒有歷史資料時只會印警告、跳過(回傳0),不會
+    自動觸發整段backfill(逐日迴圈,太重不適合塞進每日排程)——初次建立歷史要
+    人工執行一次`python large_trader_position.py backfill <start>`。"""
+    from large_trader_position import update_latest
+    logger.info("[Update] 更新大額交易人未沖銷部位...")
+    count = update_latest()
+    logger.info(f"[Update] 大額交易人未沖銷部位完成：新增 {count} 個交易日")
+
+
 def main() -> None:
     today = date.today().strftime("%Y-%m-%d")
     logger.info(f"=== 每日更新 {today} ===")
@@ -170,6 +193,8 @@ def main() -> None:
     try:
         update_institutional(today)
         update_margin(today)
+        update_foreign_option_position()
+        update_large_trader_position()
         elapsed = time.time() - start
         logger.info(f"=== 完成，耗時 {elapsed:.1f} 秒 ===")
     except Exception as e:
